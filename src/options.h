@@ -4,12 +4,13 @@
 #include "sys.h"
 
 struct Options {
-    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_COUNT };
+    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_LIMIT, O_COUNT };
 
     static inline bool tiling = false;          // dwindle tiling (off: windows roam free)
     static inline bool hideTitlebars = false;   // strip title bars even when not tiling
     static inline bool themeWindows = true;     // recolour other windows' frames to the theme
     static inline bool gaps = true;             // gaps between tiled windows
+    static inline bool limit = true;            // turning tiling on tiles at most kPerMon windows per monitor
     static inline bool startup = false;         // launch at sign-in (HKCU Run key)
 
     static bool get(int i) {
@@ -18,6 +19,7 @@ struct Options {
             case O_HIDE_TITLEBARS: return hideTitlebars;
             case O_THEME_WINDOWS: return themeWindows;
             case O_STARTUP: return startup;
+            case O_LIMIT: return limit;
             default: return gaps;
         }
     }
@@ -27,11 +29,12 @@ struct Options {
             case O_HIDE_TITLEBARS: hideTitlebars = v; break;
             case O_THEME_WINDOWS: themeWindows = v; break;
             case O_STARTUP: startup = v; break;
+            case O_LIMIT: limit = v; break;
             default: gaps = v; break;
         }
     }
     static unsigned pack() {
-        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0);
+        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0) | (limit ? 0 : 32u);
     }
     static void unpack(unsigned v) {
         tiling = v & 1;
@@ -39,5 +42,6 @@ struct Options {
         themeWindows = !(v & 4);
         gaps = !(v & 8);
         startup = v & 16;
+        limit = !(v & 32);
     }
 };

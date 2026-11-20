@@ -1,6 +1,8 @@
-// The Win+Space menu, laid out like Omarchy's: a "Go" list of categories, each a titled submenu.
+﻿// The Win+Space menu, laid out like Omarchy's: a "Go" list of categories, each a titled submenu.
 //
-// Main page: built-in commands, then every Start Menu shortcut (sorted, de-duplicated).
+// Apps page: every Start Menu shortcut (.lnk/.url/.appref-ms) and every packaged (Store) app, sorted
+// and de-duplicated. They are collected lazily by a background thread started when the menu opens,
+// so drawing never waits for the disk or COM; the rows are merged in when the thread is done.
 // Options page: checkboxes for the toggles in options.h; changes apply immediately.
 // Everything transient (window, item list, the app scan) lives in one VirtualAlloc'd arena
 // that is freed when the menu closes, so the idle process pays nothing for it.
@@ -12,6 +14,8 @@
 #include "render_gdi.h"
 #include "options.h"
 #include "tiler.h"  // tileutil::forceForeground, contains
+#include <shobjidl.h>
+#include <shlobj.h>
 
 struct ShellLaunch {
     static bool run(const wchar_t* path, const wchar_t* params = nullptr) {
@@ -77,7 +81,52 @@ struct Menu {
     static void act(const wchar_t* icon, const wchar_t* label, int id) { add(label, nullptr, id, icon); }
 
     // ------------------------------------------------------------ app scan --
-    static void scanDir(const wchar_t* dir, int depth) {
+    // Runs on a worker thread into its own VirtualAlloc'd block (header + items + string pool), so it
+    // shares nothing with the UI arena. The UI thread adopts the finished block and frees it on close.
+    static constexpr int kMaxApps = 1024;
+    static constexpr size_t kScanBytes = 1 << 20;
+    static constexpr UINT WM_APPS = WM_APP + 20;
+    struct Scan { size_t used; int n; Item items[kMaxApps]; };
+
+    static inline Scan* volatile ready;  // finished scan waiting for the UI thread
+    static inline Scan* mine;            // scan whose strings the item list points into
+    static inline volatile LONG gen;     // bumped on open and close: a stale worker discards its result
+    static inline bool scanning;
+
+    static const wchar_t* sdup(Scan* s, const wchar_t* t, int n) {
+        const size_t bytes = ((size_t)(n + 1) * sizeof(wchar_t) + 7) & ~(size_t)7;
+        if (s->used + bytes > kScanBytes) return nullptr;
+        wchar_t* d = (wchar_t*)((char*)s + s->used);
+        s->used += bytes;
+        for (int i = 0; i < n; ++i) d[i] = t[i];
+        d[n] = 0;
+        return d;
+    }
+    static void sadd(Scan* s, const wchar_t* label, const wchar_t* arg) {
+        if (s->n >= kMaxApps || !label || !arg) return;
+        s->items[s->n++] = {label, arg, ID_APP, nullptr, nullptr, (u8)APPS};
+    }
+
+    static bool endsWithI(const wchar_t* name, int n, const wchar_t* ext) {
+        const int e = sys::wlen(ext);
+        if (n <= e) return false;
+        for (int i = 0; i < e; ++i) {
+            wchar_t a = name[n - e + i], b = ext[i];
+            if (a >= L'A' && a <= L'Z') a += 32;
+            if (a != b) return false;
+        }
+        return true;
+    }
+    static bool startsWithI(const wchar_t* s, const wchar_t* prefix) {
+        for (; *prefix; ++s, ++prefix) {
+            wchar_t a = *s;
+            if (a >= L'A' && a <= L'Z') a += 32;
+            if (a != *prefix) return false;
+        }
+        return true;
+    }
+
+    static void scanDir(Scan* s, const wchar_t* dir, int depth) {
         wchar_t pat[MAX_PATH];
         wsprintfW(pat, L"%s\\*", dir);
         WIN32_FIND_DATAW fd;
@@ -88,47 +137,121 @@ struct Menu {
             wchar_t full[MAX_PATH];
             wsprintfW(full, L"%s\\%s", dir, fd.cFileName);
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                if (depth < 4) scanDir(full, depth + 1);
+                if (depth < 6) scanDir(s, full, depth + 1);
                 continue;
             }
             const int n = sys::wlen(fd.cFileName);
-            if (n < 5 || !sys::weq(fd.cFileName + n - 4, L".lnk")) continue;
-            if (tileutil::contains(fd.cFileName, L"Uninstall") || tileutil::contains(fd.cFileName, L"uninstall")) continue;
-            add(dup(fd.cFileName, n - 4), dup(full, sys::wlen(full)), ID_APP);
-        } while (FindNextFileW(f, &fd) && nItems < kMaxItems);
+            int cut = 0;
+            if (endsWithI(fd.cFileName, n, L".lnk") || endsWithI(fd.cFileName, n, L".url")) cut = 4;
+            else if (endsWithI(fd.cFileName, n, L".appref-ms")) cut = 10;
+            if (!cut) continue;
+            if (startsWithI(fd.cFileName, L"uninstall") || startsWithI(fd.cFileName, L"unins0")) continue;  // uninstallers, not apps named "... Uninstall ..."
+            sadd(s, sdup(s, fd.cFileName, n - cut), sdup(s, full, sys::wlen(full)));
+        } while (FindNextFileW(f, &fd));
         FindClose(f);
+    }
+
+    // Packaged (Store) apps: enumerate the "All apps" shell folder. Only entries whose AppUserModelID
+    // has the Package!App form are taken; desktop apps come from their shortcuts above.
+    static void scanPackaged(Scan* s) {
+        static const GUID kAppsFolder = {0x1e87508d, 0x89c2, 0x42f0, {0x8a, 0x7e, 0x64, 0x5a, 0x0f, 0x50, 0xca, 0x58}};
+        static const GUID kEnumItems = {0x94f60519, 0x2850, 0x4924, {0xaa, 0x5a, 0xd1, 0x5e, 0x84, 0x86, 0x80, 0x39}};
+        if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return;
+        IShellItem* folder = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderItem(kAppsFolder, KF_FLAG_DEFAULT, nullptr, IID_PPV_ARGS(&folder)))) {
+            IEnumShellItems* en = nullptr;
+            if (SUCCEEDED(folder->BindToHandler(nullptr, kEnumItems, IID_PPV_ARGS(&en)))) {
+                IShellItem* it = nullptr;
+                ULONG got = 0;
+                while (en->Next(1, &it, &got) == S_OK && got == 1) {
+                    LPWSTR id = nullptr, name = nullptr;
+                    if (SUCCEEDED(it->GetDisplayName(SIGDN_PARENTRELATIVEPARSING, &id)) && id &&
+                        SUCCEEDED(it->GetDisplayName(SIGDN_NORMALDISPLAY, &name)) && name) {
+                        bool bang = false, slash = false;
+                        for (const wchar_t* c = id; *c; ++c) { bang |= *c == L'!'; slash |= *c == L'\\'; }
+                        const int ln = sys::wlen(name), li = sys::wlen(id);
+                        if (bang && !slash && ln && li < 220) {
+                            wchar_t arg[260];
+                            sys::wcopy(sys::wcopy(arg, L"shell:AppsFolder\\"), id);
+                            sadd(s, sdup(s, name, ln), sdup(s, arg, sys::wlen(arg)));
+                        }
+                    }
+                    if (id) CoTaskMemFree(id);
+                    if (name) CoTaskMemFree(name);
+                    it->Release();
+                }
+                en->Release();
+            }
+            folder->Release();
+        }
+        CoUninitialize();
     }
 
     static int cmp(const Item& a, const Item& b) { return CompareStringOrdinal(a.label, -1, b.label, -1, TRUE) - 2; }
 
-    static void sortApps(int from) {  // shell sort: no recursion, no CRT
-        for (int gap = (nItems - from) / 2; gap > 0; gap /= 2)
-            for (int i = from + gap; i < nItems; ++i) {
-                Item t = items[i];
+    static void sortApps(Scan* s) {  // shell sort: no recursion, no CRT
+        Item* it = s->items;
+        const int n = s->n;
+        for (int gap = n / 2; gap > 0; gap /= 2)
+            for (int i = gap; i < n; ++i) {
+                Item t = it[i];
                 int j = i;
-                for (; j >= from + gap && cmp(items[j - gap], t) > 0; j -= gap) items[j] = items[j - gap];
-                items[j] = t;
+                for (; j >= gap && cmp(it[j - gap], t) > 0; j -= gap) it[j] = it[j - gap];
+                it[j] = t;
             }
-        int w = from;  // drop exact duplicates (same shortcut in user and system menus)
-        for (int i = from; i < nItems; ++i)
-            if (w == from || cmp(items[w - 1], items[i]) != 0) items[w++] = items[i];
-        nItems = w;
+        int w = 0;  // drop exact duplicates (same app in user and system menus, or as shortcut and Store entry)
+        for (int i = 0; i < n; ++i)
+            if (w == 0 || cmp(it[w - 1], it[i]) != 0) it[w++] = it[i];
+        s->n = w;
     }
 
-    static void buildApps() {
-        const int from = nItems;
+    static void freeScan(Scan* s) { if (s) VirtualFree(s, 0, MEM_RELEASE); }
+
+    static DWORD WINAPI scanThread(LPVOID arg) {
+        const LONG g = (LONG)(INT_PTR)arg;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        Scan* s = (Scan*)VirtualAlloc(nullptr, kScanBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!s) return 0;
+        s->used = (sizeof(Scan) + 7) & ~(size_t)7;
         wchar_t dir[MAX_PATH];
         if (GetEnvironmentVariableW(L"ProgramData", dir, MAX_PATH)) {
-            wchar_t* e = dir + sys::wlen(dir);
-            sys::wcopy(e, L"\\Microsoft\\Windows\\Start Menu\\Programs");
-            scanDir(dir, 0);
+            sys::wcopy(dir + sys::wlen(dir), L"\\Microsoft\\Windows\\Start Menu\\Programs");
+            scanDir(s, dir, 0);
         }
         if (GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH)) {
-            wchar_t* e = dir + sys::wlen(dir);
-            sys::wcopy(e, L"\\Microsoft\\Windows\\Start Menu\\Programs");
-            scanDir(dir, 0);
+            sys::wcopy(dir + sys::wlen(dir), L"\\Microsoft\\Windows\\Start Menu\\Programs");
+            scanDir(s, dir, 0);
         }
-        sortApps(from);
+        if (gen == g) scanPackaged(s);
+        sortApps(s);
+        if (gen != g) { freeScan(s); return 0; }  // menu closed meanwhile
+        InterlockedExchangePointer((PVOID volatile*)&ready, s);
+        if (gen != g) {  // closed between the check and the hand-off: whoever swaps it out frees it
+            freeScan((Scan*)InterlockedExchangePointer((PVOID volatile*)&ready, nullptr));
+            return 0;
+        }
+        if (HWND w = hwnd) PostMessageW(w, WM_APPS, 0, 0);
+        return 0;
+    }
+
+    static void startScan() {
+        scanning = true;
+        HANDLE t = CreateThread(nullptr, 0, scanThread, (LPVOID)(INT_PTR)gen, 0, nullptr);
+        if (t) CloseHandle(t); else scanning = false;
+    }
+
+    // UI thread: adopt a finished scan and append its rows.
+    static void adoptScan() {
+        Scan* s = (Scan*)InterlockedExchangePointer((PVOID volatile*)&ready, nullptr);
+        if (!s) return;
+        scanning = false;
+        if (!items) { freeScan(s); return; }
+        freeScan(mine);
+        mine = s;
+        for (int i = 0; i < s->n && nItems < kMaxItems; ++i) items[nItems++] = s->items[i];
+        const int keepSel = sel, keepTop = top;
+        refilter();
+        if (keepSel < nView) { sel = keepSel; top = keepTop; }
     }
 
     static constexpr const wchar_t* kPs = L"powershell.exe";
@@ -147,7 +270,7 @@ struct Menu {
                 go(L"\xE777", L"Update", UPDATE);
                 go(L"\xE7E8", L"System", SYSTEM);
                 break;
-            case APPS: buildApps(); break;
+            case APPS: break;  // filled in by the background scan (adoptScan)
             case LEARN:
                 go(L"\xE765", L"Keybindings", KEYS);
                 run(L"\xE774", L"Omarchy", L"https://learn.omacom.io/2/the-omarchy-manual");
@@ -198,6 +321,7 @@ struct Menu {
                 opt(L"Hide title bars", Options::O_HIDE_TITLEBARS);
                 opt(L"Theme window colours", Options::O_THEME_WINDOWS);
                 opt(L"Gaps between windows", Options::O_GAPS);
+                opt(L"Limit to 4 tiled windows per monitor when tiling starts", Options::O_LIMIT);
                 opt(L"Run at startup", Options::O_STARTUP);
                 break;
             case INSTALL:
@@ -231,11 +355,9 @@ struct Menu {
     }
 
     // Every page's rows live in one list (tagged with their page) so a query can search them all.
-    // Apps go last: the shortcut scan is the only part that can fill the list.
     static void buildAll() {
         nItems = 0;
-        for (int p = 0; p < (int)kPages; ++p) if (p != APPS) buildPage((Page)p);
-        buildPage(APPS);
+        for (int p = 0; p < (int)kPages; ++p) buildPage((Page)p);
     }
 
     // ----------------------------------------------------------- filtering --
@@ -284,6 +406,7 @@ struct Menu {
     static void open(Page p, int curDpi) {
         if (hwnd) { SetForegroundWindow(hwnd); return; }
         dpi = curDpi;
+        InterlockedIncrement(&gen);
         used = 0;
         arena = (char*)VirtualAlloc(nullptr, kArena, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!arena) return;
@@ -309,6 +432,7 @@ struct Menu {
         openedAt = GetTickCount();
         ShowWindow(hwnd, SW_SHOW);
         tileutil::forceForeground(hwnd);
+        startScan();  // after the window is up: the first paint never waits for it
     }
 
     static void close() {
@@ -316,6 +440,11 @@ struct Menu {
         HWND h = hwnd;
         hwnd = nullptr;
         DestroyWindow(h);
+        InterlockedIncrement(&gen);  // a scan still running discards its result
+        freeScan((Scan*)InterlockedExchangePointer((PVOID volatile*)&ready, nullptr));
+        freeScan(mine);
+        mine = nullptr;
+        scanning = false;
         if (arena) { VirtualFree(arena, 0, MEM_RELEASE); arena = nullptr; }
         items = nullptr;
         view = nullptr;
@@ -407,7 +536,9 @@ struct Menu {
                 r.text(cw - pd - sys::scale(10, dpi) - r.measure(from, F_SMALL), y, rh, from, F_SMALL, p.dim());
             }
         }
-        if (!nView) r.text(pd + sys::scale(10, dpi), y0, rh, L"no matches", F_TEXT, p.dim());
+        if (!nView)
+            r.text(pd + sys::scale(10, dpi), y0, rh, scanning && (qlen || page == APPS) ? L"loading apps..." : L"no matches",
+                   F_TEXT, p.dim());
 
         const wchar_t* hint = qlen ? L"Enter select   Esc back" : page == MAIN ? L"Enter open   Esc close" : hasToggles() ? L"Enter/Space toggle   Esc back" : L"Enter select   Esc back";
         r.text(cw - pd - r.measure(hint, F_SMALL), ch - sys::scale(24, dpi), sys::scale(20, dpi), hint, F_SMALL, p.dim());
@@ -426,6 +557,7 @@ struct Menu {
                 return 0;
             }
             case WM_ERASEBKGND: return 1;
+            case WM_APPS: adoptScan(); InvalidateRect(h, nullptr, FALSE); return 0;
             case WM_KEYDOWN:
                 switch (wp) {
                     case VK_UP: move(-1); break;

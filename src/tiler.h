@@ -57,6 +57,7 @@ inline void forceForeground(HWND h) {
 template <class Bus>
 struct Dwindle {
     static constexpr int kMaxWin = 128, kNodes = kMaxWin * 2, kWs = 10, kMaxMon = 4, kSlots = kMaxMon * kWs;
+    static constexpr int kPerMon = 4;  // Options::limit: windows tiled per monitor when tiling is switched on
     enum : u8 { F_FLOAT = 1, F_HIDDEN = 2, F_MIN = 4 };
     static constexpr const wchar_t* kHidProp = L"awhid";
 
@@ -73,6 +74,7 @@ struct Dwindle {
     static inline Mon mons[kMaxMon];
     static inline int nMon, curW[kMaxMon];  // monitors (left to right) and the workspace each one shows
     static inline bool ready;
+    static inline bool enabling;  // inside enable(): the per-monitor limit applies
     static inline wchar_t scope[48];  // dev option: only manage windows whose title contains this
 
     // ------------------------------------------------------------ geometry --
@@ -339,13 +341,30 @@ struct Dwindle {
     }
 
     // --------------------------------------------------- window lifecycle --
+    static int tiledOn(int slot) {
+        int n = 0;
+        for (int i = 0; i < nWins; ++i) if (wins[i].ws == slot && !(wins[i].flags & (F_FLOAT | F_MIN))) ++n;
+        return n;
+    }
+
     static void addWin(HWND h) {
         Win& w = wins[nWins++];
         w.h = h;
         GetWindowRect(h, &w.orig);
-        const int m = monOfWindow(h);
+        int m = monOfWindow(h);
         w.ws = (u8)slotOf(m, curW[m]);
         w.flags = IsIconic(h) ? F_MIN : 0;
+        if (enabling && Options::limit && !(w.flags & F_MIN) && tiledOn(w.ws) > kPerMon) {  // counts w itself
+            // Monitor full: try the others (primary first), else leave the window floating where it is.
+            int to = -1;
+            for (int k = 0; k < nMon && to < 0; ++k) {
+                const int c = k == 0 ? primaryMon() : (k - 1 < primaryMon() ? k - 1 : k);
+                if (tiledOn(slotOf(c, curW[c])) < kPerMon) to = c;
+            }
+            if (to >= 0) w.ws = (u8)slotOf(to, curW[to]);
+            else w.flags |= F_FLOAT;
+        }
+        if (w.flags & F_FLOAT) return;
         if (!(w.flags & F_MIN)) insert(w.ws, h);
     }
 
@@ -398,7 +417,9 @@ struct Dwindle {
 
     static void enable() {
         init();
+        enabling = true;  // EnumWindows runs front to back, so the topmost windows get the tiles
         EnumWindows(enumTrack, 0);
+        enabling = false;
         relayout();
     }
 
