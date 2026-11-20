@@ -66,6 +66,19 @@ struct RegistryStore {
         return RegGetValueW(HKEY_CURRENT_USER, key, L"LogoFont", RRF_RT_REG_SZ, nullptr, face, &sz) == ERROR_SUCCESS
                && face[0];
     }
+    static bool loadOptions(unsigned& bits) {
+        DWORD d = 0, dsz = sizeof(d);
+        if (RegGetValueW(HKEY_CURRENT_USER, key, L"Options", RRF_RT_REG_DWORD, nullptr, &d, &dsz) != ERROR_SUCCESS) return false;
+        bits = d;
+        return true;
+    }
+    static void saveOptions(unsigned bits) {
+        HKEY k;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return;
+        DWORD d = bits;
+        RegSetValueExW(k, L"Options", 0, REG_DWORD, (const BYTE*)&d, sizeof(d));
+        RegCloseKey(k);
+    }
     static void save(const wchar_t* theme, int bg) {
         HKEY k;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return;

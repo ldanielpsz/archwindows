@@ -18,6 +18,6 @@ cl /nologo /std:c++20 /O1 /Os /Gy /Gw /GS- /Gs1000000 /GR- /EHs-c- /Zc:threadSaf
    /W4 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG src\main.cpp /Fobuild\ /Fe:build\archwindows.exe ^
    /link /NODEFAULTLIB /ENTRY:start /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF ^
    /FILEALIGN:512 /DEBUG:NONE /MANIFEST:NO ^
-   kernel32.lib user32.lib gdi32.lib advapi32.lib
+   kernel32.lib user32.lib gdi32.lib advapi32.lib dwmapi.lib shell32.lib
 if errorlevel 1 exit /b 1
 for %%f in (build\archwindows.exe) do echo built %%f  %%~zf bytes

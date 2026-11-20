@@ -6,9 +6,11 @@
 #include <windows.h>
 
 typedef unsigned char u8;
+typedef unsigned short u16;
 typedef unsigned int  u32;
 
 namespace sys {
+
 
 inline int wlen(const wchar_t* s) { int n = 0; while (s[n]) ++n; return n; }
 

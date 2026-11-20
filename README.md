@@ -4,8 +4,72 @@ A native Windows shell: top bar, workspaces indicator, and a theme + background 
 version**; tiling, hotkeys and app-bar registration come in the Windows-specific session.
 
 - C++20 straight onto Win32/GDI. **No CRT, no frameworks, no third-party code.**
-- ~28 KB exe. Idle: ~1.3 MB private / ~0.2 MB working set after the post-paint trim.
+- ~52 KB exe. Idle: ~1.5 MB private / ~0.2 MB working set after the post-paint trim.
 - Ships 23 themes (palettes, previews, backgrounds); see `LICENSE` for attributions.
+
+## Win+Space menu and Options
+
+`Win+Space` opens a type-to-filter menu: **Theme and background**, **Options**, **Quit shell**, then every
+Start Menu shortcut (sorted). Enter runs, Esc closes (Esc on the Options page goes back). Packaged
+(Store) apps are not listed yet. The menu is always available, even with tiling off; it takes over
+Windows' Win+Space input-language switch (use Alt+Shift for that).
+
+**Options** (saved to `HKCU\Software\ArchWindows\Options`; space or Enter toggles, applied immediately):
+
+| Option | Default | Effect |
+|---|---|---|
+| Tiling | **off** | dwindle tiling with the Super-key chords below. Off: windows roam free like normal Windows and Windows keeps all of its own Win-key shortcuts |
+| Hide title bars | off | strip title bars even when not tiling (tiled windows always lose theirs) |
+| Theme window colours | on | border, title bar and frame colours follow the theme |
+| Gaps between windows | on | 10 px outer, 5 px inner |
+
+## Tiling
+
+Turn on *Tiling* in the Options menu (or run with `--tiling` for one session). Every window of the
+current workspace is tiled in a dwindle layout: a new window splits the focused one, side by side when
+its box is wider than tall. While tiling is on, the bar shows workspaces 1-5 (up to 10 if used), tiled
+windows lose their title bars, and these chords work. They are caught by a small
+low-level keyboard hook, because Windows already owns most Win-key combinations and `RegisterHotKey`
+cannot take them:
+
+| Keys | Action |
+|---|---|
+| `Super+Q` / `Super+W` | close window |
+| `Super+Arrows` | focus the window in that direction |
+| `Super+Shift+Arrows` | swap with the window in that direction |
+| `Super+J` | toggle the split direction of the focused window's pair |
+| `Super+T` | float <-> tile the focused window (floating windows keep their title bar and old size) |
+| `Super+F` | fullscreen (whole work area) |
+| `Super+Alt+F` | full width (keeps gaps) |
+| `Super+M` | minimise |
+| `Super+1..0` | go to workspace 1-10 |
+| `Super+Shift+1..0` | move the focused window to workspace 1-10 |
+| `Super+Tab` / `Super+Shift+Tab` | next / previous workspace |
+| `Super+-` / `Super+=` | focused window 100 px narrower / wider; add Shift for height |
+
+Dialogs, fixed-size windows, tool windows, always-on-top windows and shell windows are never tiled.
+Workspaces work by hiding the windows of other workspaces (`SW_HIDE`); quitting shows everything again, and
+`--reset` (or simply starting the shell again) shows anything a crash left hidden. Single monitor for now.
+The bar reserves its strip as an app bar, so maximised and tiled windows start below it.
+
+## Window styling
+
+While running, other apps' windows follow the theme (DWM attributes only; nothing is injected): an
+accent-coloured border on the focused window, a muted one on the rest, title bar in the theme's
+background/text colours, square corners, dark or light frame. Event-driven (WinEvent hooks), no polling,
+no window list kept for this. Elevated (admin) windows are not affected.
+
+Title-bar removal skips apps that draw their own (Chrome/Edge/VS Code/Electron, UWP/WinUI apps, File
+Explorer, Firefox, Office - see `StripCaption::excludedClass`); those can still be tiled and coloured.
+
+| Flag | Effect |
+|---|---|
+| `--tiling` | force tiling on for this run |
+| `--no-style` | bar and menu only: no window colours, title bars or tiling |
+| `--reset` | restore every window's title bar and colours, unhide anything left hidden, then exit |
+| `--menu` / `--picker` | open the menu / theme picker at launch |
+
+Quitting normally (right-click the power icon, or Quit in the menu) restores all windows.
 
 ## Logo
 
@@ -36,7 +100,8 @@ Assets (`themes\`) are found in `assets\` next to the exe or one level up. The b
 | Picker: Enter or double-click | apply theme, set wallpaper, remember choice (HKCU\Software\ArchWindows) |
 | Picker: Esc, or focus lost | revert |
 | Clock click | cycle format |
-| Workspace click / wheel | switch (visual only for now) |
+| Workspace click / wheel | switch workspace (shown only while tiling is on) |
+| Win+Space | menu (launcher, theme picker, Options) |
 | Power icon, right-click | quit |
 
 ## Policy-based design
@@ -50,7 +115,12 @@ Each concern is a small type with a static interface; `main.cpp` is the only pla
 | Image | `acquire/release/decode` | `WicImage` (loaded only while picker is open) | - |
 | Wallpaper | `set(path)` | `SpiWallpaper` | - |
 | Store | `load/save` | `RegistryStore` | - |
-| Workspaces | `count/active/focus` | `StubWorkspaces` | tiler model |
+| Workspaces | `visible/count/active/focus` | `TileWorkspaces` (fed by the layout) | - |
+| Layout | `track/untrack/relayout/focusDir/swapDir/switchTo/...` | `Dwindle` (binary-split layout) | master, scrolling |
+| Window style | `styleable/apply/reset` | `DwmStyle` (DWM frame colours) | - |
+| Window frame | `hide/restore` | `StripCaption` | - |
+| Launcher | `run(path)` | `ShellLaunch` (Start Menu shortcuts) | Store apps |
+| Keys | chord table `kChords` | `LowLevelKeys` (Super chords) | - |
 | Bar widget | `slot/width/paint/click[/scroll]` (a `concept`) | Logo, Workspaces, Clock, icons, Battery, Power | tray, panels |
 
 `Bar<Bus, R, Widgets...>` inherits every widget (no vtables, no heap) and walks the pack with fold
@@ -62,6 +132,9 @@ expressions. `Bus` is the narrow interface through which bar and picker talk to 
 - Frames are double-buffered per paint and freed immediately; nothing resident.
 - Picker window, preview pixels (`VirtualAlloc`) and WIC/ole32 exist only while it is open.
 - Wallpaper is applied by path; we never hold the image.
+- The menu's item list and Start Menu scan live in one `VirtualAlloc` arena, freed on close.
+- Tiler state is fixed static arrays (~17 KB, touched only when tiling is on); window frame state
+  lives in properties on the target windows, not in our memory.
 - A 1.5 s idle timer calls `SetProcessWorkingSetSize(-1,-1)` after every burst of activity.
 - Palettes are `constexpr` data; no parsing at runtime.
 
@@ -74,6 +147,6 @@ The upstream sources are 79 MB of 8K WebP.
 
 ## Deliberately not done yet
 
-Real tiling and workspaces, `RegisterHotKey` bindings, `SHAppBarMessage` work-area reservation
-(the bar currently overlaps the top 26px of other windows), tray, network/audio/bluetooth panels,
-multi-monitor bars, Linux-specific pieces, user themes, and per-theme border gradients (needed by the tiler).
+Tray, network/audio/bluetooth panels, multi-monitor tiling and bars, Store (packaged) apps in the
+launcher, per-theme border gradients and rounding, user themes, scratchpad/pop-out/master layouts, and
+dragging or mouse-resizing tiled windows.

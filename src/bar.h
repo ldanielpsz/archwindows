@@ -14,6 +14,8 @@
 #include "sys.h"
 #include "theme.h"
 #include "render_gdi.h"
+#include "keys.h"
+#include <shellapi.h>
 
 enum class Slot : u8 { Left, Center, Right };
 enum Action : u8 { A_NONE, A_REPAINT, A_PICKER, A_QUIT };
@@ -29,6 +31,7 @@ struct Metrics {
 // by the window manager; the bar widget below does not change.
 struct StubWorkspaces {
     static inline int act;
+    static constexpr bool visible() { return true; }
     static constexpr int count() { return 5; }
     static int active() { return act; }
     static void focus(int i) { act = i; }
@@ -49,7 +52,7 @@ template <class Model>
 struct WorkspacesW {
     static constexpr Slot slot = Slot::Left;
     static int cell(const Metrics& m) { return m.s(22); }
-    template <class R> int width(R&, const Metrics& m) { return Model::count() * cell(m); }
+    template <class R> int width(R&, const Metrics& m) { return Model::visible() ? Model::count() * cell(m) : 0; }
     template <class R>
     void paint(R& r, int x, int y, int, int h, const Palette& p, bool, const Metrics& m) {
         const int c = cell(m);
@@ -244,11 +247,34 @@ struct Bar : Ws... {
         SetTimer(hwnd, kClockTimer, 60000 - t.wSecond * 1000 - t.wMilliseconds + 20, nullptr);
     }
 
+    // Reserve the strip at the top of the primary monitor as an app bar: maximised windows,
+    // snapping and the tiler's work area all start below it. Windows removes the reservation
+    // by itself if this process dies.
+    bool reserved = false;
     void place() {
         MONITORINFO mi{sizeof(mi)};
         GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
-        SetWindowPos(hwnd, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top,
-                     mi.rcMonitor.right - mi.rcMonitor.left, m.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        APPBARDATA abd{};
+        abd.cbSize = sizeof(abd);
+        abd.hWnd = hwnd;
+        abd.uCallbackMessage = WM_APP;
+        if (!reserved) { SHAppBarMessage(ABM_NEW, &abd); reserved = true; }
+        abd.uEdge = ABE_TOP;
+        abd.rc = mi.rcMonitor;
+        abd.rc.bottom = abd.rc.top + m.h;
+        SHAppBarMessage(ABM_QUERYPOS, &abd);
+        abd.rc.bottom = abd.rc.top + m.h;
+        SHAppBarMessage(ABM_SETPOS, &abd);
+        SetWindowPos(hwnd, HWND_TOPMOST, abd.rc.left, abd.rc.top, abd.rc.right - abd.rc.left, m.h,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+    void unreserve() {
+        if (!reserved) return;
+        APPBARDATA abd{};
+        abd.cbSize = sizeof(abd);
+        abd.hWnd = hwnd;
+        SHAppBarMessage(ABM_REMOVE, &abd);
+        reserved = false;
     }
 
     void setDpi(int dpi) {
@@ -300,7 +326,13 @@ struct Bar : Ws... {
             case WM_TIMER:
                 if (wp == kClockTimer) { KillTimer(h, kClockTimer); armClock(); InvalidateRect(h, nullptr, FALSE); }
                 return 0;
-            case WM_DISPLAYCHANGE: place(); return 0;
+            case WM_CHORD: Bus::chord((int)wp); return 0;
+            case WM_APP:  // app bar notifications
+                if (wp == ABN_POSCHANGED) place();
+                else if (wp == ABN_FULLSCREENAPP)
+                    SetWindowPos(h, lp ? HWND_BOTTOM : HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return 0;
+            case WM_DISPLAYCHANGE: place(); Bus::displayChanged(); return 0;
             case WM_DPICHANGED:
                 setDpi(HIWORD(wp));
                 Bus::dpiChanged(m.dpi);
