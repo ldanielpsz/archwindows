@@ -70,7 +70,7 @@ struct StripCaption {
             L"Chrome_WidgetWin",         // Chrome, Edge, VS Code, Electron, Teams
             L"ApplicationFrameWindow",   // UWP / packaged apps
             L"Windows.UI.",              // WinUI hosts
-            L"CabinetWClass",            // File Explorer (tabs live in the title bar)
+            // L"CabinetWClass",         // File Explorer: experiment, title bar now stripped like other windows
             L"MozillaWindowClass",       // Firefox
             L"OpusApp", L"XLMAIN", L"PPTFrameClass", L"rctrl_renwnd32",  // Office
         };

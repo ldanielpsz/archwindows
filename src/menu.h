@@ -1,4 +1,4 @@
-﻿// The Win+Space menu, laid out like Omarchy's: a "Go" list of categories, each a titled submenu.
+// The Win+Space menu, laid out like Omarchy's: a "Go" list of categories, each a titled submenu.
 //
 // Apps page: every Start Menu shortcut (.lnk/.url/.appref-ms) and every packaged (Store) app, sorted
 // and de-duplicated. They are collected lazily by a background thread started when the menu opens,
@@ -322,6 +322,7 @@ struct Menu {
                 opt(L"Theme window colours", Options::O_THEME_WINDOWS);
                 opt(L"Gaps between windows", Options::O_GAPS);
                 opt(L"Limit to 4 tiled windows per monitor when tiling starts", Options::O_LIMIT);
+                opt(L"Theme drives Windows dark/light and accent", Options::O_SYSTHEME);
                 opt(L"Run at startup", Options::O_STARTUP);
                 break;
             case INSTALL:

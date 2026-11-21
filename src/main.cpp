@@ -17,6 +17,7 @@
 #include "picker.h"
 #include "tiler.h"
 #include "winstyle.h"
+#include "systheme.h"
 #include "menu.h"
 
 // The compiler may emit calls to these even in freestanding code. Optimisation
@@ -127,6 +128,7 @@ static struct {
     int committed;
     int dpi;
     bool tilingOn;  // what the layout engine is currently doing
+    bool sysThemeOn;  // Windows' own colours currently follow the theme
     wchar_t logoFace[64];
     TheBar bar;
 } S;
@@ -146,7 +148,11 @@ void Bus::preview(int i) {
     if (TheMenu::hwnd) InvalidateRect(TheMenu::hwnd, nullptr, FALSE);
     Watcher::restyleAll();  // other apps' windows follow the theme live
 }
-void Bus::commit(int i) { S.committed = i; preview(i); }
+void Bus::commit(int i) {
+    S.committed = i;
+    preview(i);
+    if (Options::sysTheme) SysTheme::apply(S.pal);  // committed themes only, never previews
+}
 void Bus::scheduleTrim() { SetTimer(S.bar.hwnd, TheBar::kTrimTimer, 1500, nullptr); }
 void Bus::dpiChanged(int dpi) {
     S.dpi = dpi;
@@ -180,6 +186,10 @@ void Bus::optionsChanged() {
     if (Options::tiling != S.tilingOn) {
         S.tilingOn = Options::tiling;
         if (S.tilingOn) Layout::enable(); else Layout::disable();
+    }
+    if (Options::sysTheme != S.sysThemeOn) {
+        S.sysThemeOn = Options::sysTheme;
+        if (S.sysThemeOn) SysTheme::apply(S.pal); else SysTheme::restore();
     }
     Watcher::restyleAll();  // title bars, colours, and (via relayout) gaps
     Bus::repaintBar();
@@ -253,6 +263,7 @@ extern "C" void start() {
     // (use after a crash or force-kill).
     if (hasFlag(L"--reset")) {
         Layout::recoverHidden();
+        SysTheme::restore();
         Watcher::resetAll();
         ExitProcess(0);
     }
@@ -282,6 +293,9 @@ extern "C" void start() {
     if (noStyle) Options::tiling = false;
     flagValue(L"--scope=", Layout::scope, 48);  // dev: only manage windows whose title contains this
     S.tilingOn = Options::tiling;
+    S.sysThemeOn = Options::sysTheme;
+    if (S.sysThemeOn) SysTheme::apply(S.pal);
+    else SysTheme::restore();  // a backup left by a crash
 
     unsigned glyph = Fonts::kDefaultLogo;
     RegistryStore::loadLogo(S.logoFace, 64, glyph);
@@ -339,6 +353,7 @@ extern "C" void start() {
             CloseHandle(pi.hProcess);
         }
     }
+    if (SysTheme::active) SysTheme::restore();  // before Watcher::stop, whose frame reset reads the system mode
     if (!noStyle) Watcher::stop();
     logf(L"stop: window styles restored");
     S.bar.unreserve();
