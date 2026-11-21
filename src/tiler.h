@@ -594,11 +594,9 @@ struct Dwindle {
         relayout();
     }
 
-    // Show workspace `n` on monitor `m` (default: the active one).
-    static void switchTo(int n, int m = -1) {
-        if (!Options::tiling || !ready || n < 0 || n >= kWs) return;
-        if (m < 0) m = activeMon();
-        if (m >= nMon || n == curW[m]) return;
+    // Make monitor `m` show its workspace `n` (hide the old one's windows, show the new one's).
+    static bool showWs(int m, int n) {
+        if (m < 0 || m >= nMon || n == curW[m]) return false;
         const int from = slotOf(m, curW[m]), to = slotOf(m, n);
         for (int i = 0; i < nWins; ++i)
             if (wins[i].ws == from && !(wins[i].flags & (F_MIN | F_HIDDEN))) {
@@ -612,7 +610,21 @@ struct Dwindle {
                 wins[i].flags &= (u8)~F_HIDDEN;
                 showWin(wins[i].h);
             }
+        return true;
+    }
+
+    // Show workspace `n`, asked from monitor `m` (default: the active one). With Options::syncWs
+    // every monitor switches to its own workspace `n` together, so a workspace spans all screens.
+    static void switchTo(int n, int m = -1) {
+        if (!Options::tiling || !ready || n < 0 || n >= kWs) return;
+        if (m < 0) m = activeMon();
+        if (m >= nMon) return;
+        bool changed = false;
+        if (Options::syncWs) for (int k = 0; k < nMon; ++k) changed |= showWs(k, n);
+        else changed = showWs(m, n);
+        if (!changed) return;
         relayout();
+        const int to = slotOf(m, n);
         if (last[to] && idx(last[to]) >= 0) focus(last[to]);
     }
 
@@ -709,6 +721,12 @@ struct Dwindle {
             }
         }
         for (int s = 0; s < kSlots; ++s) { root[s] = nr[s]; last[s] = nl[s]; fs[s] = nf[s]; fsMode[s] = nfm[s]; }
+        // A monitor that just appeared joins the workspace the others show.
+        if (Options::syncWs && oldN > 0) {
+            int shown = curW[0];
+            for (int i = 0; i < oldN; ++i) if (map[i] >= 0) { shown = curW[i]; break; }
+            for (int m = 0; m < nMon; ++m) if (!taken[m]) nc[m] = shown;
+        }
         for (int m = 0; m < kMaxMon; ++m) curW[m] = nc[m];
         for (int i = 0; i < nWins; ++i)
             if (!orphan[i]) wins[i].ws = (u8)slotOf(map[monOf(wins[i].ws)], wins[i].ws % kWs);

@@ -17,10 +17,31 @@
 #include "winstyle.h"  // winutil::isOwn, isShellWindow
 #include <shobjidl.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 
 struct ShellLaunch {
     static bool run(const wchar_t* path, const wchar_t* params = nullptr) {
         return (INT_PTR)ShellExecuteW(nullptr, L"open", path, params, nullptr, SW_SHOWNORMAL) > 32;
+    }
+};
+
+// The user's default terminal and browser, for the Super+Enter / Super+Shift+B launchers.
+template <class Launch>
+struct DefaultApps {
+    // Windows Terminal with its default profile (wt.exe is its app alias, on PATH); the classic
+    // console if Terminal is not installed.
+    static bool terminal() { return Launch::run(L"wt.exe") || Launch::run(L"cmd.exe"); }
+
+    // The program registered for https links, started with no page, which opens a new window in
+    // every common browser. If only a handler without an executable is registered (some packaged
+    // browsers), open the browser's start page through the protocol instead.
+    static bool browser() {
+        wchar_t exe[MAX_PATH];
+        DWORD n = MAX_PATH;
+        if (SUCCEEDED(AssocQueryStringW(ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE, L"https", L"open", exe, &n)) &&
+            GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES && Launch::run(exe))
+            return true;
+        return Launch::run(L"https://");
     }
 };
 
@@ -283,6 +304,8 @@ struct Menu {
             case KEYS: {  // tiling chords only act while Tiling is on (Setup)
                 static constexpr const wchar_t* k[] = {
                     L"Super + Space  \x2014  this menu",
+                    L"Super + Enter  \x2014  terminal (Windows Terminal, default profile)",
+                    L"Super + Shift + B  \x2014  browser (your default)",
                     L"Super + Q / W  \x2014  close window",
                     L"Super + J  \x2014  toggle split",
                     L"Super + T  \x2014  toggle floating",
@@ -323,6 +346,7 @@ struct Menu {
                 opt(L"Theme window colours", Options::O_THEME_WINDOWS);
                 opt(L"Gaps between windows", Options::O_GAPS);
                 opt(L"Limit to 4 tiled windows per monitor when tiling starts", Options::O_LIMIT);
+                opt(L"Workspaces switch on all monitors together", Options::O_SYNCWS);
                 opt(L"Theme drives Windows dark/light and accent", Options::O_SYSTHEME);
                 opt(L"Theme drives terminal colours", Options::O_TERMTHEME);
                 opt(L"Run at startup", Options::O_STARTUP);

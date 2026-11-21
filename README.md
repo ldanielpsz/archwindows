@@ -24,6 +24,7 @@ Windows' Win+Space input-language switch (use Alt+Shift for that).
 | Hide title bars | off | strip title bars even when not tiling (tiled windows always lose theirs) |
 | Theme window colours | on | border, title bar and frame colours follow the theme |
 | Gaps between windows | on | 10 px outer, 5 px inner |
+| Workspaces switch on all monitors together | on | `Super+1..0`, `Super+Tab` and the bar's workspace numbers switch every monitor to its own workspace N, so a workspace spans all screens. Off: only the active monitor switches |
 | Theme drives Windows dark/light and accent | off | Explorer, Settings and other apps follow the theme's dark/light mode and accent; originals restored on quit |
 | Theme drives terminal colours | off | Windows Terminal (live, via an `archwindows` scheme in settings.json), mintty/Git Bash (`.minttyrc`, new windows) and the classic console (`HKCU\Console`, new windows) use the theme's colours. Originals are backed up and put back when the option is turned off |
 
@@ -38,6 +39,8 @@ cannot take them:
 
 | Keys | Action |
 |---|---|
+| `Super+Enter` | Windows Terminal with its default profile (classic console if Terminal is missing); always on |
+| `Super+Shift+B` | your default browser, new window; always on |
 | `Super+Q` / `Super+W` | close window |
 | `Super+Arrows` | focus the window in that direction |
 | `Super+Shift+Arrows` | swap with the window in that direction |
@@ -55,9 +58,9 @@ Dialogs, fixed-size windows, tool windows, always-on-top windows and shell windo
 Workspaces work by hiding the windows of other workspaces (`SW_HIDE`); quitting shows everything again, and
 `--reset` (or simply starting the shell again) shows anything a crash left hidden.
 
-Multi-monitor (up to 4): every monitor has its own bar and its own workspaces 1-10; the bar's workspace
-indicator, `Super+1..0` and `Super+Tab` act on that monitor (the focused window's, else the one under
-the cursor). `Super+Shift+Arrows` past the edge of a monitor moves the window to the next one. When
+Multi-monitor (up to 4): every monitor has its own bar and its own workspaces 1-10. By default they
+switch together (see Options); with that off, the bar's workspace indicator, `Super+1..0` and
+`Super+Tab` act on one monitor only (the focused window's, else the one under the cursor). `Super+Shift+Arrows` past the edge of a monitor moves the window to the next one. When
 monitors are plugged, unplugged or rearranged, each keeps its workspaces; windows of a monitor that
 is gone move to the same workspace number on the primary. Each bar reserves the top strip of its
 monitor as an app bar, so maximised and tiled windows start below it. All bars use the primary

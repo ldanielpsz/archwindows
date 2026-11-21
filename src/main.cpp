@@ -236,6 +236,11 @@ void Bus::optionsChanged() {
 void Bus::chord(int i) {
     const KeyChord& c = kChords[i];
     if (c.act == K_MENU) { TheMenu::open(TheMenu::MAIN, S.dpi); return; }
+    if (c.act == K_TERMINAL || c.act == K_BROWSER) {
+        Placement::arm(TheMenu::focusedMonitor());  // opens on the screen you are working on
+        if (c.act == K_TERMINAL) DefaultApps<ShellLaunch>::terminal(); else DefaultApps<ShellLaunch>::browser();
+        return;
+    }
     HWND h = Watcher::target();
     const int step = sys::scale(100, S.dpi);
     switch (c.act) {
