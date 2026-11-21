@@ -14,6 +14,7 @@
 #include "render_gdi.h"
 #include "options.h"
 #include "tiler.h"  // tileutil::forceForeground, contains
+#include "winstyle.h"  // winutil::isOwn, isShellWindow
 #include <shobjidl.h>
 #include <shlobj.h>
 
@@ -323,6 +324,7 @@ struct Menu {
                 opt(L"Gaps between windows", Options::O_GAPS);
                 opt(L"Limit to 4 tiled windows per monitor when tiling starts", Options::O_LIMIT);
                 opt(L"Theme drives Windows dark/light and accent", Options::O_SYSTHEME);
+                opt(L"Theme drives terminal colours", Options::O_TERMTHEME);
                 opt(L"Run at startup", Options::O_STARTUP);
                 break;
             case INSTALL:
@@ -404,9 +406,23 @@ struct Menu {
     static int pad() { return sys::scale(12, dpi); }
     static int height() { return pad() * 2 + inputH() + kRows * rowH() + sys::scale(30, dpi); }
 
+    // The screen the user is working on: the focused window's monitor; with nothing focused (or
+    // the desktop / our own windows focused), the monitor under the cursor.
+    static inline HMONITOR mon;
+    static HMONITOR focusedMonitor() {
+        HWND fg = GetForegroundWindow();
+        fg = fg ? GetAncestor(fg, GA_ROOT) : nullptr;
+        if (fg && IsWindowVisible(fg) && !IsIconic(fg) && !winutil::isOwn(fg) && !winutil::isShellWindow(fg))
+            return MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        POINT pt{};
+        GetCursorPos(&pt);
+        return MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    }
+
     static void open(Page p, int curDpi) {
         if (hwnd) { SetForegroundWindow(hwnd); return; }
         dpi = curDpi;
+        mon = focusedMonitor();  // before our window takes the focus
         InterlockedIncrement(&gen);
         used = 0;
         arena = (char*)VirtualAlloc(nullptr, kArena, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -424,8 +440,9 @@ struct Menu {
             RegisterClassW(&wc);
             registered = true;
         }
-        RECT wa;
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        MONITORINFO mi{sizeof(mi)};
+        if (!GetMonitorInfoW(mon, &mi)) SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
+        const RECT wa = mi.rcWork;
         const int w = width(), h = height();
         hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"AWMenu", L"", WS_POPUP,
                                wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top) / 6, w, h,
@@ -474,7 +491,9 @@ struct Menu {
         if (it.arg) sys::wcopy(path, it.arg);  // arena dies with the window
         if (it.params) sys::wcopy(params, it.params);
         const int id = it.id;
+        const HMONITOR target = mon;
         close();
+        if (id >= ID_APP) Bus::launchOn(target);  // the app's first window opens on the menu's screen
         if (id == ID_THEME) Bus::openPicker();
         else if (id == ID_QUIT) Bus::quit();
         else if (id == ID_RESTORE) Bus::restoreDefault();

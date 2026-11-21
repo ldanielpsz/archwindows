@@ -4,7 +4,7 @@
 #include "sys.h"
 
 struct Options {
-    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_LIMIT, O_SYSTHEME, O_COUNT };
+    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_LIMIT, O_SYSTHEME, O_TERMTHEME, O_COUNT };
 
     static inline bool tiling = false;          // dwindle tiling (off: windows roam free)
     static inline bool hideTitlebars = false;   // strip title bars even when not tiling
@@ -13,6 +13,7 @@ struct Options {
     static inline bool limit = true;            // turning tiling on tiles at most kPerMon windows per monitor
     static inline bool sysTheme = false;        // theme drives Windows' dark/light mode and accent (systheme.h)
     static inline bool startup = false;         // launch at sign-in (HKCU Run key)
+    static inline bool termTheme = false;       // theme drives terminal colours (termtheme.h)
 
     static bool get(int i) {
         switch (i) {
@@ -22,6 +23,7 @@ struct Options {
             case O_STARTUP: return startup;
             case O_LIMIT: return limit;
             case O_SYSTHEME: return sysTheme;
+            case O_TERMTHEME: return termTheme;
             default: return gaps;
         }
     }
@@ -33,11 +35,12 @@ struct Options {
             case O_STARTUP: startup = v; break;
             case O_LIMIT: limit = v; break;
             case O_SYSTHEME: sysTheme = v; break;
+            case O_TERMTHEME: termTheme = v; break;
             default: gaps = v; break;
         }
     }
     static unsigned pack() {
-        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0) | (limit ? 0 : 32u) | (sysTheme ? 64u : 0);
+        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0) | (limit ? 0 : 32u) | (sysTheme ? 64u : 0) | (termTheme ? 128u : 0);
     }
     static void unpack(unsigned v) {
         tiling = v & 1;
@@ -47,5 +50,6 @@ struct Options {
         startup = v & 16;
         limit = !(v & 32);
         sysTheme = v & 64;
+        termTheme = v & 128;
     }
 };

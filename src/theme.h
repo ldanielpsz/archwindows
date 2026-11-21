@@ -13,8 +13,8 @@
 using gen::Color;
 
 struct Palette {
-    COLORREF c[gen::kColorCount];
-    bool light;
+    COLORREF c[gen::kColorCount] = {};  // initialised so shell state stays constant-initialised (no CRT)
+    bool light = false;
     COLORREF operator[](Color k) const { return c[k]; }
 
     COLORREF bg()  const { return c[gen::C_BACKGROUND]; }

@@ -124,9 +124,27 @@ struct Dwindle {
             if (GetMonitorInfoW(mons[i].h, &mi)) { mons[i].mon = mi.rcMonitor; mons[i].work = mi.rcWork; }
         }
     }
+    // A handle we do not know means the list is stale: Windows hands out new HMONITORs when the
+    // display topology changes. Match by area (same screen, new handle) before giving up, and then
+    // fall back to the primary monitor rather than whichever one happens to sort first.
     static int monIndex(HMONITOR h) {
         for (int i = 0; i < nMon; ++i) if (mons[i].h == h) return i;
-        return 0;
+        MONITORINFO mi{sizeof(mi)};
+        if (h && GetMonitorInfoW(h, &mi)) {
+            int best = -1;
+            long long bestArea = 0;
+            for (int i = 0; i < nMon; ++i) {
+                RECT x;
+                if (!IntersectRect(&x, &mons[i].mon, &mi.rcMonitor)) continue;
+                const long long a = (long long)(x.right - x.left) * (x.bottom - x.top);
+                if (a > bestArea) { best = i; bestArea = a; }
+            }
+            if (best >= 0) {
+                if (EqualRect(&mons[best].mon, &mi.rcMonitor)) { mons[best].h = h; mons[best].work = mi.rcWork; }
+                return best;
+            }
+        }
+        return primaryMon();
     }
     static int monOfWindow(HWND h) { return monIndex(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST)); }
     // The monitor that window commands and workspace switches act on: the focused window's,
@@ -229,6 +247,8 @@ struct Dwindle {
         if (!GetWindowTextW(h, title, 96)) return false;
         return !scope[0] || tileutil::contains(title, scope);
     }
+
+    static bool known(HWND h) { return ready && idx(h) >= 0; }  // tracked, including hidden on another workspace
 
     static bool isTiled(HWND h) {
         const int i = idx(h);
@@ -417,6 +437,7 @@ struct Dwindle {
 
     static void enable() {
         init();
+        enumMonitors();   // monitors may have come and gone while tiling was off (nothing to remap: no windows)
         enabling = true;  // EnumWindows runs front to back, so the topmost windows get the tiles
         EnumWindows(enumTrack, 0);
         enabling = false;
@@ -640,12 +661,74 @@ struct Dwindle {
         else if (!(wins[i].flags & F_FLOAT)) relayout();
     }
 
-    // Monitors came or went: re-read them and rehome windows whose monitor vanished.
+    // Monitors came, went or were rearranged. Re-read them and carry every monitor's workspaces
+    // (trees, focus memory, fullscreen, shown workspace) over to its new index: matched by handle,
+    // else by identical area. Windows of a monitor that is gone move to the same workspace number
+    // on the primary monitor.
     static void displayChanged() {
         if (!ready) return;
+        Mon old[kMaxMon];
+        const int oldN = nMon;
+        for (int i = 0; i < oldN; ++i) old[i] = mons[i];
         enumMonitors();
+
+        int map[kMaxMon];
+        bool taken[kMaxMon] = {};
+        for (int i = 0; i < oldN; ++i) {
+            map[i] = -1;
+            for (int j = 0; j < nMon && map[i] < 0; ++j)
+                if (!taken[j] && mons[j].h == old[i].h) map[i] = j;
+            if (map[i] >= 0) taken[map[i]] = true;
+        }
+        for (int i = 0; i < oldN; ++i) {
+            for (int j = 0; j < nMon && map[i] < 0; ++j)
+                if (!taken[j] && EqualRect(&mons[j].mon, &old[i].mon)) map[i] = j;
+            if (map[i] >= 0) taken[map[i]] = true;
+        }
+
+        // Windows of vanished monitors leave their (soon dropped) trees while the old slots are live.
+        bool orphan[kMaxWin] = {};
+        for (int i = 0; i < nWins; ++i) {
+            const int om = monOf(wins[i].ws);
+            if (om < oldN && map[om] >= 0) continue;
+            remove(wins[i].ws, wins[i].h);
+            orphan[i] = true;
+        }
+
+        short nr[kSlots];
+        HWND nl[kSlots], nf[kSlots];
+        u8 nfm[kSlots];
+        int nc[kMaxMon] = {};
+        for (int s = 0; s < kSlots; ++s) { nr[s] = -1; nl[s] = nf[s] = nullptr; nfm[s] = 0; }
+        for (int i = 0; i < oldN; ++i) {
+            if (map[i] < 0) continue;
+            nc[map[i]] = curW[i];
+            for (int w = 0; w < kWs; ++w) {
+                const int a = slotOf(i, w), b = slotOf(map[i], w);
+                nr[b] = root[a]; nl[b] = last[a]; nf[b] = fs[a]; nfm[b] = fsMode[a];
+            }
+        }
+        for (int s = 0; s < kSlots; ++s) { root[s] = nr[s]; last[s] = nl[s]; fs[s] = nf[s]; fsMode[s] = nfm[s]; }
+        for (int m = 0; m < kMaxMon; ++m) curW[m] = nc[m];
         for (int i = 0; i < nWins; ++i)
-            if (monOf(wins[i].ws) >= nMon) assign(i, slotOf(0, wins[i].ws % kWs));
+            if (!orphan[i]) wins[i].ws = (u8)slotOf(map[monOf(wins[i].ws)], wins[i].ws % kWs);
+
+        const int p = primaryMon();
+        for (int i = 0; i < nWins; ++i) {
+            if (!orphan[i]) continue;
+            Win& w = wins[i];
+            const int n = slotOf(p, w.ws % kWs);
+            w.ws = (u8)n;
+            if (!visible(n) && !(w.flags & F_HIDDEN)) {
+                w.flags |= F_HIDDEN;
+                SetPropW(w.h, kHidProp, (HANDLE)1);
+                ShowWindowAsync(w.h, SW_HIDE);
+            } else if (visible(n) && (w.flags & F_HIDDEN)) {
+                w.flags &= (u8)~F_HIDDEN;
+                showWin(w.h);
+            }
+            if (!(w.flags & (F_FLOAT | F_MIN))) insert(n, w.h);
+        }
         relayout();
     }
 

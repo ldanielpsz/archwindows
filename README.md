@@ -10,7 +10,9 @@ version**; tiling, hotkeys and app-bar registration come in the Windows-specific
 ## Win+Space menu and Options
 
 `Win+Space` opens a type-to-filter menu: **Theme and background**, **Options**, **Quit shell**, then every
-Start Menu shortcut (sorted). Enter runs, Esc closes (Esc on the Options page goes back). Packaged
+Start Menu shortcut (sorted). The menu opens on the focused window's monitor (or the one under the
+cursor if nothing is focused), and the first window of an app launched from it is moved onto that
+monitor, so with tiling on it is tiled there. Enter runs, Esc closes (Esc on the Options page goes back). Packaged
 (Store) apps are not listed yet. The menu is always available, even with tiling off; it takes over
 Windows' Win+Space input-language switch (use Alt+Shift for that).
 
@@ -22,6 +24,8 @@ Windows' Win+Space input-language switch (use Alt+Shift for that).
 | Hide title bars | off | strip title bars even when not tiling (tiled windows always lose theirs) |
 | Theme window colours | on | border, title bar and frame colours follow the theme |
 | Gaps between windows | on | 10 px outer, 5 px inner |
+| Theme drives Windows dark/light and accent | off | Explorer, Settings and other apps follow the theme's dark/light mode and accent; originals restored on quit |
+| Theme drives terminal colours | off | Windows Terminal (live, via an `archwindows` scheme in settings.json), mintty/Git Bash (`.minttyrc`, new windows) and the classic console (`HKCU\Console`, new windows) use the theme's colours. Originals are backed up and put back when the option is turned off |
 
 ## Tiling
 
@@ -49,8 +53,16 @@ cannot take them:
 
 Dialogs, fixed-size windows, tool windows, always-on-top windows and shell windows are never tiled.
 Workspaces work by hiding the windows of other workspaces (`SW_HIDE`); quitting shows everything again, and
-`--reset` (or simply starting the shell again) shows anything a crash left hidden. Single monitor for now.
-The bar reserves its strip as an app bar, so maximised and tiled windows start below it.
+`--reset` (or simply starting the shell again) shows anything a crash left hidden.
+
+Multi-monitor (up to 4): every monitor has its own bar and its own workspaces 1-10; the bar's workspace
+indicator, `Super+1..0` and `Super+Tab` act on that monitor (the focused window's, else the one under
+the cursor). `Super+Shift+Arrows` past the edge of a monitor moves the window to the next one. When
+monitors are plugged, unplugged or rearranged, each keeps its workspaces; windows of a monitor that
+is gone move to the same workspace number on the primary. Each bar reserves the top strip of its
+monitor as an app bar, so maximised and tiled windows start below it. All bars use the primary
+monitor's scale (fonts are shared), so on a monitor with a different scale the bar is a little
+larger or smaller.
 
 ## Window styling
 
@@ -104,6 +116,17 @@ Assets (`themes\`) are found in `assets\` next to the exe or one level up. The b
 | Win+Space | menu (launcher, theme picker, Options) |
 | Power icon, right-click | quit |
 
+## Installer
+
+    powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1 [-Version 0.1.0] [-Rebuild]
+
+Outputs `build\archwindows-setup-<version>.exe` (needs Inno Setup 6: `winget install JRSoftware.InnoSetup`).
+It installs the exe and `assets\` to Program Files, every style under `build\msstyles\` (build them first
+with `tools\make_msstyles.py`), and optionally SecureUxTheme 4.0.0 (official MSI, SHA-256 pinned in the build
+script; needs a restart). A wizard page picks the style to apply. If SecureUxTheme was installed in the same
+run, the style is applied at the first sign-in after restarting. Uninstalling switches back to a stock theme
+if an Arch style is active, and leaves SecureUxTheme installed (it has its own entry in Installed apps).
+
 ## Policy-based design
 
 Each concern is a small type with a static interface; `main.cpp` is the only place they are wired.
@@ -147,6 +170,6 @@ The upstream sources are 79 MB of 8K WebP.
 
 ## Deliberately not done yet
 
-Tray, network/audio/bluetooth panels, multi-monitor tiling and bars, Store (packaged) apps in the
+Tray, network/audio/bluetooth panels, per-monitor scale for the bars, Store (packaged) apps in the
 launcher, per-theme border gradients and rounding, user themes, scratchpad/pop-out/master layouts, and
 dragging or mouse-resizing tiled windows.

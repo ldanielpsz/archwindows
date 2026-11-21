@@ -9,7 +9,11 @@
 //   int    width(R&, const Metrics&);             // 0 hides the widget
 //   void   paint(R&, x, y, w, h, const Palette&, bool hover, const Metrics&);
 //   Action click(int button, int relX, int width, const Metrics&);  // button: 1 left 2 right 3 middle
-//   (optional) Action scroll(int dir);
+//   (optional) Action scroll(int dir, const Metrics&);
+//
+// There is one Bar per monitor (Metrics::mon); each reserves the top strip of its own monitor.
+// Shell-wide work (hotkeys, timers, display changes) lives in the shell's hidden controller
+// window, not here, so bars can come and go with monitors.
 #pragma once
 #include "sys.h"
 #include "theme.h"
@@ -22,19 +26,20 @@ enum Action : u8 { A_NONE, A_REPAINT, A_PICKER, A_QUIT };
 
 struct Metrics {
     int dpi, h, pad, gap;
+    HMONITOR mon;  // the monitor this bar sits on
     int s(int v) const { return sys::scale(v, dpi); }
 };
 
 // ---------------------------------------------------------------- widgets --
 
-// Workspace policy stand-in. The tiling session replaces this with a model fed
-// by the window manager; the bar widget below does not change.
+// Workspace model: per monitor, since every monitor shows its own workspace.
+// This stand-in is a fixed set of five; the shell feeds the real one from the tiler.
 struct StubWorkspaces {
     static inline int act;
     static constexpr bool visible() { return true; }
-    static constexpr int count() { return 5; }
-    static int active() { return act; }
-    static void focus(int i) { act = i; }
+    static constexpr int count(HMONITOR) { return 5; }
+    static int active(HMONITOR) { return act; }
+    static void focus(HMONITOR, int i) { act = i; }
 };
 
 struct LogoW {
@@ -52,14 +57,15 @@ template <class Model>
 struct WorkspacesW {
     static constexpr Slot slot = Slot::Left;
     static int cell(const Metrics& m) { return m.s(22); }
-    template <class R> int width(R&, const Metrics& m) { return Model::visible() ? Model::count() * cell(m) : 0; }
+    template <class R> int width(R&, const Metrics& m) { return Model::visible() ? Model::count(m.mon) * cell(m) : 0; }
     template <class R>
     void paint(R& r, int x, int y, int, int h, const Palette& p, bool, const Metrics& m) {
         const int c = cell(m);
-        for (int i = 0; i < Model::count(); ++i) {
+        const int n_ = Model::count(m.mon), act = Model::active(m.mon);
+        for (int i = 0; i < n_; ++i) {
             wchar_t n[4];
             wsprintfW(n, L"%d", i + 1);
-            const bool on = i == Model::active();
+            const bool on = i == act;
             r.textCentered(x + i * c, y, c, h, n, F_TEXT, on ? p[gen::C_BRIGHT_FOREGROUND] : p.dim());
             if (on) r.fill(x + i * c + m.s(4), y + h - m.s(3), c - m.s(8), m.s(2), p.accent());
         }
@@ -67,14 +73,14 @@ struct WorkspacesW {
     Action click(int b, int relX, int, const Metrics& m) {
         if (b != 1) return A_NONE;
         int i = relX / cell(m);
-        if (i < 0 || i >= Model::count()) return A_NONE;
-        Model::focus(i);
+        if (i < 0 || i >= Model::count(m.mon)) return A_NONE;
+        Model::focus(m.mon, i);
         return A_REPAINT;
     }
-    Action scroll(int dir) {
-        int n = Model::active() + dir;
-        if (n < 0 || n >= Model::count()) return A_NONE;
-        Model::focus(n);
+    Action scroll(int dir, const Metrics& m) {
+        int n = Model::active(m.mon) + dir;
+        if (n < 0 || n >= Model::count(m.mon)) return A_NONE;
+        Model::focus(m.mon, n);
         return A_REPAINT;
     }
 };
@@ -181,10 +187,10 @@ template <class Bus, class R, class... Ws>
 struct Bar : Ws... {
     static_assert((BarWidget<Ws, R> && ...), "widget does not satisfy BarWidget");
     static constexpr int N = sizeof...(Ws);
-    static constexpr int kClockTimer = 1, kTrimTimer = 2;
+    static constexpr int kClockTimer = 1;
 
     HWND hwnd = nullptr;
-    Metrics m{96, 26, 10, 4};
+    Metrics m{96, 26, 10, 4, nullptr};
     int hover = -1;
     bool tracking = false;
     int px[N] = {}, pw[N] = {};
@@ -227,11 +233,11 @@ struct Bar : Ws... {
     Action scroll(int idx, int dir) {
         int i = 0;
         Action a = A_NONE;
-        ((i++ == idx ? (a = scrollOne(static_cast<Ws&>(*this), dir)) : A_NONE), ...);
+        ((i++ == idx ? (a = scrollOne(static_cast<Ws&>(*this), dir, m)) : A_NONE), ...);
         return a;
     }
-    template <class W> static Action scrollOne(W& w, int dir) {
-        if constexpr (requires { w.scroll(dir); }) return w.scroll(dir);
+    template <class W> static Action scrollOne(W& w, int dir, const Metrics& m) {
+        if constexpr (requires { w.scroll(dir, m); }) return w.scroll(dir, m);
         else return A_NONE;
     }
 
@@ -247,13 +253,13 @@ struct Bar : Ws... {
         SetTimer(hwnd, kClockTimer, 60000 - t.wSecond * 1000 - t.wMilliseconds + 20, nullptr);
     }
 
-    // Reserve the strip at the top of the primary monitor as an app bar: maximised windows,
+    // Reserve the strip at the top of this bar's monitor as an app bar: maximised windows,
     // snapping and the tiler's work area all start below it. Windows removes the reservation
     // by itself if this process dies.
     bool reserved = false;
     void place() {
         MONITORINFO mi{sizeof(mi)};
-        GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+        if (!GetMonitorInfoW(m.mon, &mi)) return;  // monitor gone; the shell rebuilds the bars
         APPBARDATA abd{};
         abd.cbSize = sizeof(abd);
         abd.hWnd = hwnd;
@@ -326,20 +332,15 @@ struct Bar : Ws... {
             case WM_TIMER:
                 if (wp == kClockTimer) { KillTimer(h, kClockTimer); armClock(); InvalidateRect(h, nullptr, FALSE); }
                 return 0;
-            case WM_CHORD: Bus::chord((int)wp); return 0;
             case WM_APP:  // app bar notifications
                 if (wp == ABN_POSCHANGED) place();
                 else if (wp == ABN_FULLSCREENAPP)
                     SetWindowPos(h, lp ? HWND_BOTTOM : HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 return 0;
-            case WM_DISPLAYCHANGE: place(); Bus::displayChanged(); return 0;
-            case WM_DPICHANGED:
-                setDpi(HIWORD(wp));
-                Bus::dpiChanged(m.dpi);
-                place();
-                return 0;
+            // Fonts are shared by every bar, so the shell decides (only the primary monitor's
+            // scale changes them). Never take the suggested rect: place() sizes the bar.
+            case WM_DPICHANGED: Bus::monitorDpiChanged(m.mon, HIWORD(wp)); return 0;
             case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
-            case WM_DESTROY: PostQuitMessage(0); return 0;
         }
         return DefWindowProcW(h, msg, wp, lp);
     }

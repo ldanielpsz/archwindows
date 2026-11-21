@@ -181,7 +181,10 @@ struct WindowWatcher {
                 handle(lastActive, true);
                 break;
             }
-            case EVENT_OBJECT_SHOW: handle(h, h == GetForegroundWindow()); break;
+            case EVENT_OBJECT_SHOW:
+                Bus::windowShown(h);  // a just-launched app may be moved to the menu's monitor first
+                handle(h, h == GetForegroundWindow());
+                break;
             case EVENT_OBJECT_DESTROY: Layout::untrack(h); break;
             case EVENT_OBJECT_HIDE: Layout::onHide(h); break;
             case EVENT_SYSTEM_MINIMIZESTART: Layout::onMinimize(h, true); break;

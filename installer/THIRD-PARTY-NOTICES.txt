@@ -1,0 +1,23 @@
+Third-party components distributed with the archwindows installer
+==================================================================
+
+SecureUxTheme
+-------------
+Copyright (C) namazso <admin@namazso.eu>
+Licensed under the GNU Lesser General Public License, version 2.1 or later.
+The full licence text is in licenses\SecureUxTheme-COPYING.txt.
+
+The installer carries the official, unmodified SecureUxTheme MSI packages from the project's
+GitHub release (the SHA-256 digests are checked at build time). Its complete source code for
+that release is at:
+
+    https://github.com/namazso/SecureUxTheme/tree/v4.0.0
+
+SecureUxTheme is installed as its own product. It shows up as "SecureUxTheme" in
+Settings > Apps > Installed apps and is uninstalled from there. Uninstalling archwindows leaves
+it installed.
+
+Visual styles (msstyles\)
+-------------------------
+The bundled .msstyles files are recoloured copies of the Windows Aero visual style
+(aero.msstyles, (c) Microsoft Corporation), made by tools\make_msstyles.py.

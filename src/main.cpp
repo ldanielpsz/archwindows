@@ -18,7 +18,9 @@
 #include "tiler.h"
 #include "winstyle.h"
 #include "systheme.h"
+#include "termtheme.h"
 #include "menu.h"
+#include "spawn.h"
 
 // The compiler may emit calls to these even in freestanding code. Optimisation
 // is disabled inside them so the loops are not turned back into self-calls.
@@ -43,24 +45,28 @@ struct Bus {  // what the bar, picker, menu and layout may ask of the shell
     static void commit(int);
     static void scheduleTrim();
     static void dpiChanged(int);
+    static void monitorDpiChanged(HMONITOR, int);
     static void chord(int);
     static void optionsChanged();
     static void quit();
     static void restoreDefault();
     static void repaintBar();
     static void displayChanged();
+    static void launchOn(HMONITOR);
+    static void windowShown(HWND);
 };
 
 using Layout = Dwindle<Bus>;
+using Placement = SpawnPlacement<Layout>;
 using Watcher = WindowWatcher<Bus, DwmStyle, StripCaption, Layout>;
 
-// Bar workspace indicator fed by the tiler; hidden while tiling is off.
+// Bar workspace indicator fed by the tiler; hidden while tiling is off. Every monitor has its
+// own bar, which shows and drives that monitor's workspaces.
 struct TileWorkspaces {
     static bool visible() { return Options::tiling; }
-    // The bar lives on the primary monitor, so it shows and drives that monitor's workspaces.
-    static int count() { return Layout::slots(Layout::primaryMon()); }
-    static int active() { return Layout::curWs(Layout::primaryMon()); }
-    static void focus(int i) { Layout::switchTo(i, Layout::primaryMon()); }
+    static int count(HMONITOR m) { return Layout::slots(Layout::monIndex(m)); }
+    static int active(HMONITOR m) { return Layout::curWs(Layout::monIndex(m)); }
+    static void focus(HMONITOR m, int i) { Layout::switchTo(i, Layout::monIndex(m)); }
 };
 
 using TheBar = Bar<Bus, Render,
@@ -123,19 +129,32 @@ static void logf(const wchar_t* fmt, ...) {
 }
 
 // ------------------------------------------------------------------- state --
-static struct {
+static constexpr int kMaxBars = 4;  // as many as the tiler handles
+static constexpr UINT_PTR kTrimTimer = 2, kTaskbarTimer = 3;
+
+// constinit: there is no CRT to run dynamic initialisers, so this must be built at compile time.
+static constinit struct {
     Palette pal;
-    int committed;
-    int dpi;
-    bool tilingOn;  // what the layout engine is currently doing
-    bool sysThemeOn;  // Windows' own colours currently follow the theme
-    wchar_t logoFace[64];
-    TheBar bar;
+    int committed = 0;
+    int dpi = 96;  // shared by every bar (fonts are global): the primary monitor's
+    bool tilingOn = false;  // what the layout engine is currently doing
+    bool sysThemeOn = false;  // Windows' own colours currently follow the theme
+    bool termThemeOn = false;  // terminal colours currently follow the theme
+    wchar_t logoFace[64] = {};
+    HWND ctl = nullptr;  // hidden controller: hotkeys, timers, broadcasts, display changes
+    TheBar bars[kMaxBars];  // one per monitor; a free entry has hwnd == nullptr
 } S;
 
+// Each bar window carries a pointer to its TheBar (set on WM_NCCREATE from CreateWindowEx's param).
 static LRESULT CALLBACK barProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    S.bar.hwnd = h;
-    return S.bar.proc(h, m, w, l, S.pal);
+    if (m == WM_NCCREATE) {
+        TheBar* b = (TheBar*)((CREATESTRUCTW*)l)->lpCreateParams;
+        b->hwnd = h;
+        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)b);
+    }
+    if (m == WM_CLOSE) { PostQuitMessage(0); return 0; }  // e.g. taskkill without /f
+    TheBar* b = (TheBar*)GetWindowLongPtrW(h, GWLP_USERDATA);
+    return b ? b->proc(h, m, w, l, S.pal) : DefWindowProcW(h, m, w, l);
 }
 
 void Bus::openPicker() { ThePicker::open(S.dpi); }
@@ -143,7 +162,7 @@ int Bus::theme() { return S.committed; }
 const Palette& Bus::palette() { return S.pal; }
 void Bus::preview(int i) {
     S.pal = Themes::palette(i);
-    InvalidateRect(S.bar.hwnd, nullptr, FALSE);
+    Bus::repaintBar();
     if (ThePicker::hwnd) InvalidateRect(ThePicker::hwnd, nullptr, FALSE);
     if (TheMenu::hwnd) InvalidateRect(TheMenu::hwnd, nullptr, FALSE);
     Watcher::restyleAll();  // other apps' windows follow the theme live
@@ -152,11 +171,20 @@ void Bus::commit(int i) {
     S.committed = i;
     preview(i);
     if (Options::sysTheme) SysTheme::apply(S.pal);  // committed themes only, never previews
+    if (Options::termTheme) TermTheme::apply(S.pal);
 }
-void Bus::scheduleTrim() { SetTimer(S.bar.hwnd, TheBar::kTrimTimer, 1500, nullptr); }
+void Bus::scheduleTrim() { if (S.ctl) SetTimer(S.ctl, kTrimTimer, 1500, nullptr); }
 void Bus::dpiChanged(int dpi) {
     S.dpi = dpi;
     Fonts::build(dpi, S.logoFace[0] ? S.logoFace : nullptr);
+}
+// Only the primary monitor's scale drives the shared fonts and bar height; bars on monitors with
+// another scale keep the primary's size.
+void Bus::monitorDpiChanged(HMONITOR mon, int dpi) {
+    if (mon != MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY) || dpi == S.dpi) return;
+    Bus::dpiChanged(dpi);
+    for (TheBar& b : S.bars)
+        if (b.hwnd) { b.setDpi(dpi); b.place(); InvalidateRect(b.hwnd, nullptr, FALSE); }
 }
 static bool gReloadExplorer;
 void Bus::quit() { PostQuitMessage(0); }
@@ -177,8 +205,13 @@ static void applyStartup(bool on) {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, run, L"ArchWindows");
     }
 }
-void Bus::displayChanged() { if (Options::tiling) Layout::displayChanged(); }
-void Bus::repaintBar() { if (S.bar.hwnd) InvalidateRect(S.bar.hwnd, nullptr, FALSE); }
+// Always, even with tiling off, so the tiler never works from a stale monitor list.
+void Bus::displayChanged() { Layout::displayChanged(); }
+void Bus::launchOn(HMONITOR m) { Placement::arm(m); }
+void Bus::windowShown(HWND h) { Placement::claim(h); }
+void Bus::repaintBar() {
+    for (TheBar& b : S.bars) if (b.hwnd) InvalidateRect(b.hwnd, nullptr, FALSE);
+}
 
 void Bus::optionsChanged() {
     RegistryStore::saveOptions(Options::pack());
@@ -190,6 +223,10 @@ void Bus::optionsChanged() {
     if (Options::sysTheme != S.sysThemeOn) {
         S.sysThemeOn = Options::sysTheme;
         if (S.sysThemeOn) SysTheme::apply(S.pal); else SysTheme::restore();
+    }
+    if (Options::termTheme != S.termThemeOn) {
+        S.termThemeOn = Options::termTheme;
+        if (S.termThemeOn) TermTheme::apply(S.pal); else TermTheme::restore();
     }
     Watcher::restyleAll();  // title bars, colours, and (via relayout) gaps
     Bus::repaintBar();
@@ -243,16 +280,94 @@ static void setTaskbars(bool show) {
 }
 static UINT gTaskbarCreated;
 
-// Trim runs from a timer so it fires once the bar has been idle.
-static LRESULT CALLBACK barProcWithTrim(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == gTaskbarCreated || (m == WM_TIMER && w == TheBar::kClockTimer)) setTaskbars(false);
-    if (m == WM_TIMER && w == TheBar::kTrimTimer) {
-        KillTimer(h, TheBar::kTrimTimer);
-        TrimMemory::now();
+// ------------------------------------------------------------------ bars --
+struct MonList { HMONITOR h[kMaxBars]; int n; };
+static BOOL CALLBACK collectMon(HMONITOR h, HDC, LPRECT, LPARAM l) {
+    MonList* ml = (MonList*)l;
+    if (ml->n < kMaxBars) ml->h[ml->n++] = h;
+    return ml->n < kMaxBars;
+}
+
+static void logMonitors(const wchar_t* why) {
+    MonList ml{};
+    EnumDisplayMonitors(nullptr, nullptr, collectMon, (LPARAM)&ml);
+    logf(L"monitors (%s): %d", why, ml.n);
+    for (int i = 0; i < ml.n; ++i) {
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(ml.h[i], &mi);
+        logf(L"  %p %d,%d %dx%d work %d,%d %dx%d%s", (void*)ml.h[i], mi.rcMonitor.left, mi.rcMonitor.top,
+             mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, mi.rcWork.left,
+             mi.rcWork.top, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top,
+             (mi.dwFlags & MONITORINFOF_PRIMARY) ? L" primary" : L"");
+    }
+}
+
+static void createBar(TheBar& b, HMONITOR mon) {
+    b.setDpi(S.dpi);
+    b.m.mon = mon;
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(mon, &mi)) return;
+    // Created on its own monitor, so it never gets a WM_DPICHANGED for moving there.
+    CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"AWBar", L"archwindows", WS_POPUP,
+                    mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, b.m.h, nullptr,
+                    nullptr, GetModuleHandleW(nullptr), &b);
+    if (!b.hwnd) { logf(L"bar: CreateWindow failed: %lu", GetLastError()); return; }
+    b.place();
+    b.armClock();
+}
+
+static void destroyBar(TheBar& b) {
+    b.unreserve();
+    DestroyWindow(b.hwnd);
+    b = TheBar{};
+}
+
+// One bar per monitor: drop bars whose monitor is gone (HMONITORs change with the topology),
+// re-place the rest, add bars for new monitors.
+static void syncBars() {
+    MonList ml{};
+    EnumDisplayMonitors(nullptr, nullptr, collectMon, (LPARAM)&ml);
+    for (TheBar& b : S.bars) {
+        if (!b.hwnd) continue;
+        bool keep = false;
+        for (int j = 0; j < ml.n; ++j) keep |= ml.h[j] == b.m.mon;
+        if (keep) b.place(); else destroyBar(b);
+    }
+    for (int j = 0; j < ml.n; ++j) {
+        bool has = false;
+        for (TheBar& b : S.bars) has |= b.hwnd && b.m.mon == ml.h[j];
+        if (has) continue;
+        for (TheBar& b : S.bars)
+            if (!b.hwnd) { createBar(b, ml.h[j]); break; }
+    }
+    int n = 0;
+    for (TheBar& b : S.bars) n += b.hwnd != nullptr;
+    logf(L"bars: %d", n);
+}
+
+// ------------------------------------------------------------ controller --
+// Never shown. Top-level, so it still gets broadcasts (TaskbarCreated, WM_DISPLAYCHANGE).
+static LRESULT CALLBACK ctlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (gTaskbarCreated && m == gTaskbarCreated) {
+        // Explorer restarted: the taskbar is back and our app bar reservations are gone.
+        setTaskbars(false);
+        for (TheBar& b : S.bars) if (b.hwnd) { b.reserved = false; b.place(); }
         return 0;
     }
-    if (m == WM_CLOSE) { logf(L"bar: WM_CLOSE received -> quitting"); PostQuitMessage(0); return 0; }
-    return barProc(h, m, w, l);
+    switch (m) {
+        case WM_TIMER:
+            if (w == kTrimTimer) { KillTimer(h, kTrimTimer); TrimMemory::now(); }
+            else if (w == kTaskbarTimer) setTaskbars(false);  // Explorer can re-show it
+            return 0;
+        case WM_CHORD: Bus::chord((int)w); return 0;
+        case WM_DISPLAYCHANGE:
+            logMonitors(L"display change");
+            syncBars();
+            Bus::displayChanged();
+            return 0;
+        case WM_CLOSE: logf(L"shell: WM_CLOSE received -> quitting"); PostQuitMessage(0); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
 }
 
 // ------------------------------------------------------------- entry point --
@@ -294,6 +409,8 @@ extern "C" void start() {
     flagValue(L"--scope=", Layout::scope, 48);  // dev: only manage windows whose title contains this
     S.tilingOn = Options::tiling;
     S.sysThemeOn = Options::sysTheme;
+    S.termThemeOn = Options::termTheme;
+    if (S.termThemeOn) TermTheme::apply(S.pal);  // e.g. first run after install, or the option set elsewhere
     if (S.sysThemeOn) SysTheme::apply(S.pal);
     else SysTheme::restore();  // a backup left by a crash
 
@@ -302,26 +419,30 @@ extern "C" void start() {
     Fonts::setLogoGlyph(glyph);
 
     S.dpi = (int)GetDpiForSystem();
-    S.bar.setDpi(S.dpi);
     Bus::dpiChanged(S.dpi);
 
+    gTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+
     WNDCLASSW wc{};
-    wc.lpfnWndProc = barProcWithTrim;
+    wc.lpfnWndProc = ctlProc;
     wc.hInstance = hi;
+    wc.lpszClassName = L"AWShell";
+    RegisterClassW(&wc);
+    wc.lpfnWndProc = barProc;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = L"AWBar";
     RegisterClassW(&wc);
 
-    S.bar.hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"AWBar", L"archwindows",
-                                 WS_POPUP, 0, 0, 100, S.bar.m.h, nullptr, nullptr, hi, nullptr);
-    if (!S.bar.hwnd) { wchar_t e[32]; wsprintfW(e, L"CreateWindow failed: %lu", GetLastError()); MessageBoxW(nullptr, e, L"archwindows", MB_OK); ExitProcess(1); }
-    S.bar.place();
-    S.bar.armClock();
+    S.ctl = CreateWindowExW(WS_EX_TOOLWINDOW, L"AWShell", L"archwindows", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, hi,
+                            nullptr);
+    if (!S.ctl) { wchar_t e[32]; wsprintfW(e, L"CreateWindow failed: %lu", GetLastError()); MessageBoxW(nullptr, e, L"archwindows", MB_OK); ExitProcess(1); }
+    SetTimer(S.ctl, kTaskbarTimer, 60000, nullptr);
 
-    gTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    logMonitors(L"start");
+    syncBars();
     setTaskbars(false);
-    logf(L"start: bar window %p created, taskbar hidden", (void*)S.bar.hwnd);
-    LowLevelKeys::start(S.bar.hwnd);
+    logf(L"start: bars created, taskbar hidden");
+    LowLevelKeys::start(S.ctl);
     logf(L"start: keyboard hook %s", LowLevelKeys::hook ? L"installed" : L"FAILED");  // Win+Space always; the tiling chords only while tiling is on
     if (hasFlag(L"--picker")) Bus::openPicker();
     if (hasFlag(L"--menu")) Bus::chord(0);
@@ -356,8 +477,8 @@ extern "C" void start() {
     if (SysTheme::active) SysTheme::restore();  // before Watcher::stop, whose frame reset reads the system mode
     if (!noStyle) Watcher::stop();
     logf(L"stop: window styles restored");
-    S.bar.unreserve();
-    logf(L"stop: appbar reservation released, exiting 0");
+    for (TheBar& b : S.bars) if (b.hwnd) b.unreserve();
+    logf(L"stop: appbar reservations released, exiting 0");
     CloseHandle(once);
     ExitProcess(0);
 }
