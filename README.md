@@ -128,8 +128,8 @@ and closes on Esc, on a click elsewhere, or on a second click of its icon.
   reads, one count per reply), the plan name, refresh, and a button that starts `claude`. Nothing is sent anywhere.
 
 The menu itself follows Omarchy's: the prompt (`Go…`) is the input line, submenus end in a chevron, search results
-show where they live (`Learn › Keybindings`) with the best match on top, apps show their own colour icons, and the main
-page ends with lock / sleep / sign out / restart / shut down buttons (also under System).
+show where they live (`Learn › Keybindings`, `Apps › Inno Setup 6`) with the best match on top, apps show their own
+colour icons and Start Menu folder path, and lock / sleep / sign out / restart / shut down are rows under System.
 
 ## Logo
 

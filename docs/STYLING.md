@@ -82,7 +82,11 @@ else is Omarchy's exact rule.
 - prompt (`Go…`) and breadcrumbs `dim`; labels `fg`
 - selected row `menuSelected` fill + `menuSelectedBorder` outline, label and icon `accentText`
 - app rows show the app's own colour icon (`IShellItemImageFactory`); every other row uses a glyph
-- power buttons: idle `idleFill`/`idleBorder`, hover `hover`/`hoverBorder` with an `accentText` glyph
+- every entry is a plain row, as in Omarchy; lock / sleep / sign out / restart / shut down are rows
+  under System, not buttons
+- path detail (Omarchy's `parentPathFor`, parents joined with ` › `), as a `dim` second line in search
+  results and on the Apps page: `Setup`, `Trigger › Capture`, `Apps › Inno Setup 6` (the app's Start
+  Menu folders). Rows on the top-level page show none.
 
 **Panels** (`src/ui.h` toolkit; `net.h`, `audio.h`, `display.h`, `panels.h`, `agents.h`, `bt.h`)
 - background `bg`, 2 px frame `accent` (Omarchy `[popups] border = hyprland.active-border`)
