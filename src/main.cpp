@@ -21,15 +21,25 @@
 #include "termtheme.h"
 #include "menu.h"
 #include "spawn.h"
+#include "ui.h"
+#include "net.h"
+#include "audio.h"
+#include "display.h"
+#include "panels.h"
+#include "agents.h"
+#include "bt.h"
+#include "browsertheme.h"
 
 // The compiler may emit calls to these even in freestanding code. Optimisation
 // is disabled inside them so the loops are not turned back into self-calls.
 #pragma optimize("", off)
 extern "C" {
-#pragma function(memset, memcpy)
+#pragma function(memset, memcpy, memcmp)
 void* memset(void* d, int v, size_t n) { auto p = (unsigned char*)d; while (n--) *p++ = (unsigned char)v; return d; }
 void* memcpy(void* d, const void* s, size_t n) { auto a = (unsigned char*)d; auto b = (const unsigned char*)s; while (n--) *a++ = *b++; return d; }
+int memcmp(const void* a, const void* b, size_t n) { auto x = (const unsigned char*)a; auto y = (const unsigned char*)b; for (; n--; ++x, ++y) if (*x != *y) return *x - *y; return 0; }
 int _fltused;
+int __cdecl _purecall() { return 0; }
 }
 #pragma optimize("", on)
 
@@ -38,7 +48,7 @@ using Themes = EmbeddedThemes;
 using Render = GdiRenderer;
 
 struct Bus {  // what the bar, picker, menu and layout may ask of the shell
-    static void openPicker();
+    static void openPicker(HMONITOR mon = nullptr);
     static int theme();
     static const Palette& palette();
     static void preview(int);
@@ -54,6 +64,9 @@ struct Bus {  // what the bar, picker, menu and layout may ask of the shell
     static void displayChanged();
     static void launchOn(HMONITOR);
     static void windowShown(HWND);
+    static void openMenu(HMONITOR);
+    static void openTerminal(HMONITOR);
+    static void openPanel(int, HMONITOR, RECT);
 };
 
 using Layout = Dwindle<Bus>;
@@ -69,12 +82,34 @@ struct TileWorkspaces {
     static void focus(HMONITOR m, int i) { Layout::switchTo(i, Layout::monIndex(m)); }
 };
 
+// Status icon sources (bar.h GlyphW): each names its glyph and its optional click/scroll hooks.
+struct NetIcon { static const wchar_t* glyph() { return Net::barGlyph(); } };
+struct AudioIcon {
+    static const wchar_t* glyph() { return Audio::barGlyph(); }
+    static void scroll(int dir) { Audio::scroll(dir); }
+    static void right() { Audio::toggleMute(); }
+};
+struct DisplayIcon { static const wchar_t* glyph() { return L"\xE7F4"; } };
+struct BluetoothIcon {  // shown when the machine has a Bluetooth adapter; right click = radio on/off
+    static bool visible() { return Bt::visible(); }
+    static const wchar_t* glyph() { return Bt::barGlyph(); }
+    static void right() { Bt::radioAsync(Bt::radio == 0 ? 1 : 0); }
+};
+struct AgentsIcon {  // Claude's mark from the Omarchy font; shown once Claude Code is on the machine
+    static inline int seen = -1;
+    static bool visible() { if (seen < 0) seen = Agents::installed(); return seen != 0; }
+    static Font font() { return F_OMA; }
+    static const wchar_t* glyph() { return L"\xE90E"; }
+    static void right() { Agents::launch(nullptr); }
+};
+
+// Omarchy's bar: menu, workspaces | clock | keyboard, agents, bluetooth, network, audio, display, power.
 using TheBar = Bar<Bus, Render,
-                   LogoW, WorkspacesW<TileWorkspaces>, ClockW,
-                   IconW<0xE701>,  // wifi
-                   IconW<0xE702>,  // bluetooth
-                   IconW<0xE767>,  // volume
-                   BatteryW, PowerW>;
+                   LogoW, WorkspacesW<TileWorkspaces>, ClockW, KeyboardW,
+                   GlyphW<AgentsIcon, P_AGENTS>, GlyphW<BluetoothIcon, P_BLUETOOTH>, GlyphW<NetIcon, P_NET>,
+                   GlyphW<AudioIcon, P_AUDIO>, GlyphW<DisplayIcon, P_DISPLAY>, PowerW<Power>>;
+// Panel order matches PanelId (bar.h).
+using TheFlyout = Flyout<Bus, Net, Audio, Display, Power, Agents, Calendar, Bt>;
 using ThePicker = Picker<Bus, Render, Themes, WicImage, SpiWallpaper, RegistryStore>;
 using TheMenu = Menu<Bus, Render, ShellLaunch>;
 
@@ -130,7 +165,7 @@ static void logf(const wchar_t* fmt, ...) {
 
 // ------------------------------------------------------------------- state --
 static constexpr int kMaxBars = 4;  // as many as the tiler handles
-static constexpr UINT_PTR kTrimTimer = 2, kTaskbarTimer = 3;
+static constexpr UINT_PTR kTrimTimer = 2, kTaskbarTimer = 3, kStatusTimer = 4;
 
 // constinit: there is no CRT to run dynamic initialisers, so this must be built at compile time.
 static constinit struct {
@@ -140,6 +175,8 @@ static constinit struct {
     bool tilingOn = false;  // what the layout engine is currently doing
     bool sysThemeOn = false;  // Windows' own colours currently follow the theme
     bool termThemeOn = false;  // terminal colours currently follow the theme
+    bool browserThemeOn = false;  // Chrome/Brave colour currently follows the theme
+    unsigned statusSig = 0;  // what the bar's status icons showed at the last check
     wchar_t logoFace[64] = {};
     HWND ctl = nullptr;  // hidden controller: hotkeys, timers, broadcasts, display changes
     TheBar bars[kMaxBars];  // one per monitor; a free entry has hwnd == nullptr
@@ -157,7 +194,7 @@ static LRESULT CALLBACK barProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return b ? b->proc(h, m, w, l, S.pal) : DefWindowProcW(h, m, w, l);
 }
 
-void Bus::openPicker() { ThePicker::open(S.dpi); }
+void Bus::openPicker(HMONITOR mon) { ThePicker::open(S.dpi, mon); }
 int Bus::theme() { return S.committed; }
 const Palette& Bus::palette() { return S.pal; }
 void Bus::preview(int i) {
@@ -165,6 +202,7 @@ void Bus::preview(int i) {
     Bus::repaintBar();
     if (ThePicker::hwnd) InvalidateRect(ThePicker::hwnd, nullptr, FALSE);
     if (TheMenu::hwnd) InvalidateRect(TheMenu::hwnd, nullptr, FALSE);
+    TheFlyout::repaint();
     Watcher::restyleAll();  // other apps' windows follow the theme live
 }
 void Bus::commit(int i) {
@@ -172,6 +210,7 @@ void Bus::commit(int i) {
     preview(i);
     if (Options::sysTheme) SysTheme::apply(S.pal);  // committed themes only, never previews
     if (Options::termTheme) TermTheme::apply(S.pal);
+    if (Options::browserTheme) BrowserTheme::apply(Themes::name(S.committed), S.pal.light);
 }
 void Bus::scheduleTrim() { if (S.ctl) SetTimer(S.ctl, kTrimTimer, 1500, nullptr); }
 void Bus::dpiChanged(int dpi) {
@@ -209,6 +248,22 @@ static void applyStartup(bool on) {
 void Bus::displayChanged() { Layout::displayChanged(); }
 void Bus::launchOn(HMONITOR m) { Placement::arm(m); }
 void Bus::windowShown(HWND h) { Placement::claim(h); }
+void Bus::openMenu(HMONITOR m) { TheFlyout::close(); TheMenu::open(TheMenu::MAIN, S.dpi, m); }
+void Bus::openTerminal(HMONITOR m) { Placement::arm(m); DefaultApps<ShellLaunch>::terminal(); }
+void Bus::openPanel(int which, HMONITOR m, RECT anchor) { TheFlyout::toggle(which, m, anchor, S.dpi); }
+
+// The status icons (network, volume, battery, keyboard layout) change without any event the bars
+// see, so the controller checks them every few seconds and repaints only when one changed.
+static unsigned statusSignature() {
+    unsigned h = 2166136261u;
+    auto mixIn = [&](unsigned v) { h = (h ^ v) * 16777619u; };
+    for (const wchar_t* g = Net::barGlyph(); *g; ++g) mixIn(*g);
+    for (const wchar_t* g = Audio::barGlyph(); *g; ++g) mixIn(*g);
+    bool ch = false;
+    mixIn((unsigned)Power::battery(&ch) * 2 + ch);
+    mixIn((unsigned)(ULONG_PTR)KeyboardW::current());
+    return h;
+}
 void Bus::repaintBar() {
     for (TheBar& b : S.bars) if (b.hwnd) InvalidateRect(b.hwnd, nullptr, FALSE);
 }
@@ -228,6 +283,10 @@ void Bus::optionsChanged() {
         S.termThemeOn = Options::termTheme;
         if (S.termThemeOn) TermTheme::apply(S.pal); else TermTheme::restore();
     }
+    if (Options::browserTheme != S.browserThemeOn) {
+        S.browserThemeOn = Options::browserTheme;
+        if (S.browserThemeOn) BrowserTheme::apply(Themes::name(S.committed), S.pal.light); else BrowserTheme::restore();
+    }
     Watcher::restyleAll();  // title bars, colours, and (via relayout) gaps
     Bus::repaintBar();
 }
@@ -235,7 +294,8 @@ void Bus::optionsChanged() {
 // A Super-key chord from the keyboard hook (keys.h). Window commands act on the focused window.
 void Bus::chord(int i) {
     const KeyChord& c = kChords[i];
-    if (c.act == K_MENU) { TheMenu::open(TheMenu::MAIN, S.dpi); return; }
+    if (c.act == K_MENU) { TheFlyout::close(); TheMenu::open(TheMenu::MAIN, S.dpi); return; }
+    if (c.act == K_PICKER) { Bus::openPicker(TheMenu::focusedMonitor()); return; }
     if (c.act == K_TERMINAL || c.act == K_BROWSER) {
         Placement::arm(TheMenu::focusedMonitor());  // opens on the screen you are working on
         if (c.act == K_TERMINAL) DefaultApps<ShellLaunch>::terminal(); else DefaultApps<ShellLaunch>::browser();
@@ -259,10 +319,42 @@ void Bus::chord(int i) {
     }
 }
 
+// A hidden taskbar still reserves its strip of the work area, which left an empty band under
+// maximised and tiled windows. Switching the taskbar to auto-hide releases the strip (it is the
+// "Automatically hide the taskbar" setting, the one way Windows offers). The user's own state is
+// kept under HKCU\Software\ArchWindows\TaskbarState while we run, so a crash or --reset can put
+// it back, and it is restored on exit.
+static constexpr const wchar_t* kTaskbarState = L"TaskbarState";
+static void taskbarAutoHide(bool on) {
+    APPBARDATA abd{};
+    abd.cbSize = sizeof(abd);
+    abd.hWnd = FindWindowW(L"Shell_TrayWnd", nullptr);
+    DWORD saved = 0, sz = sizeof(saved);
+    const bool have = RegGetValueW(HKEY_CURRENT_USER, RegistryStore::key, kTaskbarState, RRF_RT_REG_DWORD, nullptr,
+                                   &saved, &sz) == ERROR_SUCCESS;
+    if (on) {
+        const UINT cur = (UINT)SHAppBarMessage(ABM_GETSTATE, &abd);
+        if (cur & ABS_AUTOHIDE) return;  // already auto-hiding (the user's choice, or ours)
+        if (!have) {                     // remember the true original only
+            const DWORD v = cur;
+            RegSetKeyValueW(HKEY_CURRENT_USER, RegistryStore::key, kTaskbarState, REG_DWORD, &v, sizeof(v));
+        }
+        abd.lParam = (LPARAM)(cur | ABS_AUTOHIDE);
+        SHAppBarMessage(ABM_SETSTATE, &abd);
+        logf(L"taskbar: auto-hide on (was 0x%x)", cur);
+    } else if (have) {
+        abd.lParam = (LPARAM)saved;
+        SHAppBarMessage(ABM_SETSTATE, &abd);
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, RegistryStore::key, kTaskbarState);
+        logf(L"taskbar: state restored (0x%lx)", saved);
+    }
+}
+
 // The Windows taskbar (and with it the Start button) is hidden while we run. Explorer can
 // re-show it or recreate it (crash/restart -> "TaskbarCreated"), so it is re-hidden on that
 // broadcast and on the bar's minute clock tick. Restored on exit.
 static void setTaskbars(bool show) {
+    if (!show) taskbarAutoHide(true);
     if (HWND t = FindWindowW(L"Shell_TrayWnd", nullptr)) {
         logf(L"taskbar: primary %p show=%d", (void*)t, (int)show);
         ShowWindow(t, show ? SW_SHOWNA : SW_HIDE);
@@ -282,6 +374,7 @@ static void setTaskbars(bool show) {
         logf(L"taskbar: secondary %p show=%d", (void*)sec[i], (int)show);
         ShowWindow(sec[i], show ? SW_SHOWNA : SW_HIDE);
     }
+    if (show) taskbarAutoHide(false);
 }
 static UINT gTaskbarCreated;
 
@@ -363,8 +456,22 @@ static LRESULT CALLBACK ctlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER:
             if (w == kTrimTimer) { KillTimer(h, kTrimTimer); TrimMemory::now(); }
             else if (w == kTaskbarTimer) setTaskbars(false);  // Explorer can re-show it
+            else if (w == kStatusTimer) {
+                const unsigned sig = statusSignature();
+                if (sig != S.statusSig) { S.statusSig = sig; Bus::repaintBar(); }
+            }
+            return 0;
+        case Audio::WM_AUDIO:  // volume changed (keys, other apps, the panel)
+            Bus::repaintBar();
+            if (TheFlyout::isOpen(P_AUDIO)) TheFlyout::repaint();
             return 0;
         case WM_CHORD: Bus::chord((int)w); return 0;
+        case WM_SETTINGCHANGE:  // the work area grew or shrank (e.g. the taskbar's strip released)
+            if (w == SPI_SETWORKAREA) {
+                logf(L"work area changed: relayout");
+                if (S.tilingOn) Layout::relayout();
+            }
+            return 0;
         case WM_DISPLAYCHANGE:
             logMonitors(L"display change");
             syncBars();
@@ -384,6 +491,8 @@ extern "C" void start() {
     if (hasFlag(L"--reset")) {
         Layout::recoverHidden();
         SysTheme::restore();
+        BrowserTheme::restore();
+        taskbarAutoHide(false);
         Watcher::resetAll();
         ExitProcess(0);
     }
@@ -395,6 +504,7 @@ extern "C" void start() {
 
     HINSTANCE hi = GetModuleHandleW(nullptr);
     Assets::locate();
+    Assets::loadFonts();  // before the fonts are built
 
     // Restore the last applied theme (the bar itself needs no assets).
     wchar_t saved[64] = {};
@@ -416,6 +526,8 @@ extern "C" void start() {
     S.sysThemeOn = Options::sysTheme;
     S.termThemeOn = Options::termTheme;
     if (S.termThemeOn) TermTheme::apply(S.pal);  // e.g. first run after install, or the option set elsewhere
+    S.browserThemeOn = Options::browserTheme;
+    if (S.browserThemeOn) BrowserTheme::apply(Themes::name(S.committed), S.pal.light);
     if (S.sysThemeOn) SysTheme::apply(S.pal);
     else SysTheme::restore();  // a backup left by a crash
 
@@ -425,6 +537,7 @@ extern "C" void start() {
 
     S.dpi = (int)GetDpiForSystem();
     Bus::dpiChanged(S.dpi);
+    logf(L"font: %s", Fonts::face);
 
     gTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
@@ -442,6 +555,8 @@ extern "C" void start() {
                             nullptr);
     if (!S.ctl) { wchar_t e[32]; wsprintfW(e, L"CreateWindow failed: %lu", GetLastError()); MessageBoxW(nullptr, e, L"archwindows", MB_OK); ExitProcess(1); }
     SetTimer(S.ctl, kTaskbarTimer, 60000, nullptr);
+    SetTimer(S.ctl, kStatusTimer, 3000, nullptr);
+    Audio::notify = S.ctl;
 
     logMonitors(L"start");
     syncBars();
@@ -451,6 +566,13 @@ extern "C" void start() {
     logf(L"start: keyboard hook %s", LowLevelKeys::hook ? L"installed" : L"FAILED");  // Win+Space always; the tiling chords only while tiling is on
     if (hasFlag(L"--picker")) Bus::openPicker();
     if (hasFlag(L"--menu")) Bus::chord(0);
+    // dev: --panel=N opens bar panel N (PanelId) under the primary bar's right edge
+    wchar_t pv[4];
+    if (flagValue(L"--panel=", pv, 4) && S.bars[0].hwnd) {
+        RECT wr;
+        GetWindowRect(S.bars[0].hwnd, &wr);
+        Bus::openPanel(pv[0] - L'0', S.bars[0].m.mon, RECT{wr.right - 80, wr.top, wr.right - 40, wr.bottom});
+    }
     if (!noStyle) Watcher::start();
     logf(L"start: ready, entering message loop (tiling=%d)", (int)Options::tiling);
 

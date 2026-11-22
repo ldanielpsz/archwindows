@@ -20,11 +20,36 @@ struct Palette {
     COLORREF bg()  const { return c[gen::C_BACKGROUND]; }
     COLORREF fg()  const { return c[gen::C_FOREGROUND]; }
     COLORREF accent() const { return c[gen::C_ACCENT]; }
-    // Secondary text: stays legible on every theme, light or dark.
-    COLORREF dim() const { return sys::mix(fg(), bg(), 45); }
-    // Row/pill fill used for hover and selection (foreground at 10-18%).
-    COLORREF hover() const { return sys::mix(bg(), fg(), 10); }
+    // Derived colours follow Omarchy's shell (default/themed/shell.toml.tpl and its Qt code), so
+    // the same theme looks the same here. Alpha-over-background becomes an opaque mix.
+    //
+    // Secondary text (panel subtitles, captions, inactive titles): Qt.darker(foreground, 1.4),
+    // kept at 3:1 or better against the background.
+    COLORREF dim() const {
+        const COLORREF f = fg();
+        const COLORREF d = RGB(GetRValue(f) * 10 / 14, GetGValue(f) * 10 / 14, GetBValue(f) * 10 / 14);
+        return sys::ensure(d, bg(), 300, f);
+    }
+    // Unused workspace numbers: foreground at 50% opacity (Omarchy's Workspaces widget).
+    COLORREF faint() const { return sys::mix(bg(), fg(), 50); }
+    // Control states ([controls]): idle fill 4% / border 40%, hover fill 8% / border 25%,
+    // selected fill 18%.
+    COLORREF idleFill() const { return sys::mix(bg(), fg(), 4); }
+    COLORREF idleBorder() const { return sys::mix(bg(), fg(), 40); }
+    COLORREF hover() const { return sys::mix(bg(), fg(), 8); }
+    COLORREF hoverBorder() const { return sys::mix(bg(), fg(), 25); }
     COLORREF selected() const { return sys::mix(bg(), fg(), 18); }
+    // Menu ([menu]): border is the foreground, the selected row foreground at 8% with a 25%
+    // outline and accent text.
+    COLORREF menuBorder() const { return fg(); }
+    COLORREF menuSelected() const { return hover(); }
+    COLORREF menuSelectedBorder() const { return hoverBorder(); }
+    // Accent used as text on a highlighted row: the theme accent, lifted toward the bright
+    // foreground only where it would fall under 3:1 on that fill (it rarely does on 8%).
+    COLORREF accentText() const { return sys::ensure(accent(), selected(), 300, c[gen::C_BRIGHT_FOREGROUND]); }
+    // Window borders (Hyprland): active = accent, inactive = rgba(595959aa) over the background.
+    COLORREF borderActive() const { return accent(); }
+    COLORREF borderInactive() const { return sys::mix(bg(), RGB(0x59, 0x59, 0x59), 67); }
 };
 
 struct EmbeddedThemes {

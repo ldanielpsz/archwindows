@@ -4,7 +4,7 @@
 #include "sys.h"
 
 struct Options {
-    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_LIMIT, O_SYSTHEME, O_TERMTHEME, O_SYNCWS, O_COUNT };
+    enum Id : int { O_TILING, O_HIDE_TITLEBARS, O_THEME_WINDOWS, O_GAPS, O_STARTUP, O_LIMIT, O_SYSTHEME, O_TERMTHEME, O_SYNCWS, O_BROWSERTHEME, O_COUNT };
 
     static inline bool tiling = false;          // dwindle tiling (off: windows roam free)
     static inline bool hideTitlebars = false;   // strip title bars even when not tiling
@@ -15,6 +15,7 @@ struct Options {
     static inline bool startup = false;         // launch at sign-in (HKCU Run key)
     static inline bool termTheme = false;       // theme drives terminal colours (termtheme.h)
     static inline bool syncWs = true;           // switching a workspace switches every monitor to it
+    static inline bool browserTheme = true;     // theme drives Chrome/Brave colour (browsertheme.h)
 
     static bool get(int i) {
         switch (i) {
@@ -26,6 +27,7 @@ struct Options {
             case O_SYSTHEME: return sysTheme;
             case O_TERMTHEME: return termTheme;
             case O_SYNCWS: return syncWs;
+            case O_BROWSERTHEME: return browserTheme;
             default: return gaps;
         }
     }
@@ -39,11 +41,12 @@ struct Options {
             case O_SYSTHEME: sysTheme = v; break;
             case O_TERMTHEME: termTheme = v; break;
             case O_SYNCWS: syncWs = v; break;
+            case O_BROWSERTHEME: browserTheme = v; break;
             default: gaps = v; break;
         }
     }
     static unsigned pack() {
-        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0) | (limit ? 0 : 32u) | (sysTheme ? 64u : 0) | (termTheme ? 128u : 0) | (syncWs ? 0 : 256u);
+        return (tiling ? 1u : 0) | (hideTitlebars ? 2u : 0) | (themeWindows ? 0 : 4u) | (gaps ? 0 : 8u) | (startup ? 16u : 0) | (limit ? 0 : 32u) | (sysTheme ? 64u : 0) | (termTheme ? 128u : 0) | (syncWs ? 0 : 256u) | (browserTheme ? 0 : 512u);
     }
     static void unpack(unsigned v) {
         tiling = v & 1;
@@ -55,5 +58,6 @@ struct Options {
         sysTheme = v & 64;
         termTheme = v & 128;
         syncWs = !(v & 256);
+        browserTheme = !(v & 512);
     }
 };

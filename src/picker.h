@@ -11,6 +11,7 @@
 #include "theme.h"
 #include "render_gdi.h"
 #include "platform.h"
+#include "tiler.h"  // tileutil::forceForeground
 
 template <class Bus, class R, class Themes, class Img, class Wall, class Store>
 struct Picker {
@@ -40,8 +41,9 @@ struct Picker {
 
     static bool isOpen() { return hwnd != nullptr; }
 
-    static void open(int curDpi) {
-        if (hwnd) { SetForegroundWindow(hwnd); return; }
+    // Centred on `mon` (the screen it was asked for from), or on the primary monitor.
+    static void open(int curDpi, HMONITOR mon = nullptr) {
+        if (hwnd) { tileutil::forceForeground(hwnd); return; }
         dpi = curDpi;
         const Geo g = geo();
         if (!registered) {
@@ -54,8 +56,9 @@ struct Picker {
             RegisterClassW(&wc);
             registered = true;
         }
-        RECT wa;
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        MONITORINFO mi{sizeof(mi)};
+        if (!mon || !GetMonitorInfoW(mon, &mi)) SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
+        const RECT wa = mi.rcWork;
         const int x = wa.left + (wa.right - wa.left - g.W) / 2;
         const int y = wa.top + (wa.bottom - wa.top - g.H) / 2;
 
@@ -71,7 +74,7 @@ struct Picker {
         hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"AWPicker", L"", WS_POPUP, x, y, g.W, g.H,
                                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
+        tileutil::forceForeground(hwnd);  // opened from a hotkey, the shell is not the foreground app
     }
 
     static void close(bool apply) {
@@ -156,7 +159,7 @@ struct Picker {
             r.frame(dx, dy, d, d, 1, p.dim());
             r.fill(dx += d + 3, dy, d, d, tp.accent());
             r.fill(dx += d + 3, dy, d, d, tp.fg());
-            r.text(dx + d + sys::scale(10, dpi), y, g.rowH, Themes::name(i), F_TEXT, on ? p.accent() : p.fg());
+            r.text(dx + d + sys::scale(10, dpi), y, g.rowH, Themes::name(i), F_TEXT, on ? p.accentText() : p.fg());
         }
 
         // Header.

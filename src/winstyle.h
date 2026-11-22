@@ -121,11 +121,29 @@ struct DwmStyle {
         return !cloaked;
     }
 
+    // Windows that draw their own title area over the frame (Explorer, Terminal, Chromium, Snipping
+    // Tool and other XAML/WinUI apps). There the DWM caption colour only shows through where the
+    // app's surface is translucent, e.g. the title row of an unfocused window, which looked like a
+    // stray tinted strip. They keep their own title area and get only the border colour and
+    // light/dark. Detected by what they all do rather than by class name: their client area starts
+    // at the top of the frame, where a classic window has its caption above the client area.
+    static bool ownTitleArea(HWND h) {
+        // A window whose caption we stripped (tiling) also reports a client area at the top; that is
+        // fine: with no caption, the caption colour has nothing to paint anyway.
+        RECT fr;
+        if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &fr, sizeof(fr)))) GetWindowRect(h, &fr);
+        POINT top{0, 0};
+        ClientToScreen(h, &top);
+        const int caption = GetSystemMetricsForDpi(SM_CYCAPTION, GetDpiForWindow(h));
+        return top.y - fr.top < caption / 2;
+    }
+
     static void apply(HWND h, const Palette& p, bool active) {
         const BOOL dark = !p.light;
-        const COLORREF border = active ? p.accent() : sys::mix(p.bg(), p.fg(), 25);
-        const COLORREF caption = p.bg();
-        const COLORREF text = active ? p.fg() : p.dim();
+        const COLORREF border = active ? p.borderActive() : p.borderInactive();
+        const bool own = ownTitleArea(h);
+        const COLORREF caption = own ? DWMWA_COLOR_DEFAULT : p.bg();
+        const COLORREF text = own ? DWMWA_COLOR_DEFAULT : active ? p.fg() : p.dim();
         const int corner = 1;  // DWMWCP_DONOTROUND: tiling look
         DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));

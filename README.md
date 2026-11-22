@@ -3,7 +3,13 @@
 A native Windows shell: top bar, workspaces indicator, and a theme + background picker. This is the **pure-UI first
 version**; tiling, hotkeys and app-bar registration come in the Windows-specific session.
 
-- C++20 straight onto Win32/GDI. **No CRT, no frameworks, no third-party code.**
+- C++20 straight onto Win32/GDI. **No CRT, no frameworks.** Third-party bytes: Omarchy's icon font
+  (`omarchy.ttf`, MIT, embedded) for the logo and the Claude mark, and Omarchy's UI font JetBrains Mono
+  (`assets/fonts`, OFL), both loaded privately for the shell only.
+- Colours follow Omarchy exactly: the palettes are Omarchy's `colors.toml`, and derived colours (dim text, hover/
+  selected fills, menu and popup borders, window borders, terminal ANSI table) use the same rules as Omarchy's
+  shell and terminal templates. `python tools/palette_report.py` writes `build/palette-report.html`, a contrast
+  sheet of every surface for every theme. The full styling reference (sources, rules, mechanisms, limits) is [docs/STYLING.md](docs/STYLING.md).
 - ~52 KB exe. Idle: ~1.5 MB private / ~0.2 MB working set after the post-paint trim.
 - Ships 23 themes (palettes, previews, backgrounds); see `LICENSE` for attributions.
 
@@ -26,6 +32,7 @@ Windows' Win+Space input-language switch (use Alt+Shift for that).
 | Gaps between windows | on | 10 px outer, 5 px inner |
 | Workspaces switch on all monitors together | on | `Super+1..0`, `Super+Tab` and the bar's workspace numbers switch every monitor to its own workspace N, so a workspace spans all screens. Off: only the active monitor switches |
 | Theme drives Windows dark/light and accent | off | Explorer, Settings and other apps follow the theme's dark/light mode and accent; originals restored on quit |
+| Theme drives Chrome / Brave colour | on | as Omarchy does: the theme's browser colour (Omarchy's `chromium.theme`, else a neutral seed: `#1c2027` dark, light grey for light themes) through the per-user `BrowserThemeColor` policy, plus `BrowserColorScheme=device` so light/dark follows Windows (Chrome may show "managed by your organization"; running browsers are told to reload policies, as Omarchy does). Removed when the option is turned off |
 | Theme drives terminal colours | off | Windows Terminal (live, via an `archwindows` scheme in settings.json), mintty/Git Bash (`.minttyrc`, new windows) and the classic console (`HKCU\Console`, new windows) use the theme's colours. Originals are backed up and put back when the option is turned off |
 
 ## Tiling
@@ -41,6 +48,7 @@ cannot take them:
 |---|---|
 | `Super+Enter` | Windows Terminal with its default profile (classic console if Terminal is missing); always on |
 | `Super+Shift+B` | your default browser, new window; always on |
+| `Super+Ctrl+T` | theme picker, on the focused monitor; always on |
 | `Super+Q` / `Super+W` | close window |
 | `Super+Arrows` | focus the window in that direction |
 | `Super+Shift+Arrows` | swap with the window in that direction |
@@ -84,12 +92,49 @@ Explorer, Firefox, Office - see `StripCaption::excludedClass`); those can still 
 | `--reset` | restore every window's title bar and colours, unhide anything left hidden, then exit |
 | `--menu` / `--picker` | open the menu / theme picker at launch |
 
-Quitting normally (right-click the power icon, or Quit in the menu) restores all windows.
+Quitting normally (System > Quit shell in the menu) restores all windows.
+
+## Bar and panels
+
+The bar follows Omarchy's default layout. Every panel opens under its icon, on that bar's monitor,
+and closes on Esc, on a click elsewhere, or on a second click of its icon.
+
+| Widget | Left click | Other |
+|---|---|---|
+| Omarchy logo | Super+Space menu on this monitor | right: terminal |
+| Workspaces (active one is a dot) | switch | scroll: next/previous |
+| Clock (`Saturday 18:29`) | calendar with ISO weeks, month arrows | right: next format |
+| Keyboard layout (only with 2+ layouts) | next layout | |
+| Claude mark (only when `~/.claude` exists) | **Agents** panel | right: start `claude` in a terminal |
+| Bluetooth | Settings > Bluetooth | |
+| Network | **Network** panel | |
+| Volume | **Audio** panel | right: mute, scroll: volume |
+| Display | **Display** panel | |
+| Battery % / power | **Power** panel | right: hide/show % |
+
+- **Network** (WLAN API + IP Helper): SSID, Wi-Fi switch, a speed-test link, ping and packet loss to 1.1.1.1, live receive/send
+  rates, totals, IP and gateway, DNS provider (DHCP / Cloudflare / Google, applied through one elevated
+  `Set-DnsClientServerAddress`, so Windows asks for admin; Custom opens Settings), known networks (click to join) and
+  other networks (Windows' own network list asks for the password).
+- **Audio** (Core Audio): output and input volume sliders, mute switch, every active output/input device; clicking one
+  makes it the default (for all roles).
+- **Display** (DisplayConfig): Windows text size (100-225%, the "Make text bigger" setting), the scale steps Windows
+  offers for the selected display (the same values as Settings), and the display list (the bar's monitor is marked
+  `focused`; click a display to choose which one the scale buttons change).
+- **Power**: battery state, Windows power mode (Efficiency / Balanced / Performance) and session buttons:
+  lock, sleep, sign out, restart, shut down (the last three ask first).
+- **Agents**: Claude Code usage read from its local transcripts (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR`), as
+  Omarchy's collector does: tokens by day for the last week and tokens by model (input + output + cache writes + cache
+  reads, one count per reply), the plan name, refresh, and a button that starts `claude`. Nothing is sent anywhere.
+
+The menu itself follows Omarchy's: the prompt (`Go…`) is the input line, submenus end in a chevron, search results
+show where they live (`Learn › Keybindings`) with the best match on top, apps show their own colour icons, and the main
+page ends with lock / sleep / sign out / restart / shut down buttons (also under System).
 
 ## Logo
 
-The bar's logo button shows the system's power glyph (Segoe Fluent Icons, already part of
-Windows; nothing is bundled). To use your own, set two values under
+The bar's logo button shows the Omarchy mark (U+E900 of Omarchy's `omarchy.ttf`, embedded in the exe and
+loaded privately, so nothing is installed). To use your own, set two values under
 `HKCU\Software\ArchWindows`:
 
 | Value | Type | Meaning |
@@ -173,6 +218,6 @@ The upstream sources are 79 MB of 8K WebP.
 
 ## Deliberately not done yet
 
-Tray, network/audio/bluetooth panels, per-monitor scale for the bars, Store (packaged) apps in the
+Tray, a bluetooth panel, Wi-Fi password entry and the Wi-Fi QR code, weather, brightness, per-monitor scale for the bars, Store (packaged) apps in the
 launcher, per-theme border gradients and rounding, user themes, scratchpad/pop-out/master layouts, and
 dragging or mouse-resizing tiled windows.

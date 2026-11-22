@@ -22,7 +22,10 @@
 #include <shellapi.h>
 
 enum class Slot : u8 { Left, Center, Right };
-enum Action : u8 { A_NONE, A_REPAINT, A_PICKER, A_QUIT };
+// Panels a widget can open (the flyout's panel index, see main.cpp).
+enum PanelId : u8 { P_NET, P_AUDIO, P_DISPLAY, P_POWER, P_AGENTS, P_CALENDAR, P_BLUETOOTH, kPanels };
+enum Action : u8 { A_NONE, A_REPAINT, A_PICKER, A_QUIT, A_MENU, A_TERMINAL, A_PANEL0 };
+inline Action panelAction(PanelId p) { return (Action)((int)A_PANEL0 + (int)p); }
 
 struct Metrics {
     int dpi, h, pad, gap;
@@ -42,32 +45,37 @@ struct StubWorkspaces {
     static void focus(HMONITOR, int i) { act = i; }
 };
 
+// Omarchy menu button: left = the Super+Space menu on this monitor, right = terminal.
 struct LogoW {
     static constexpr Slot slot = Slot::Left;
-    template <class R> int width(R&, const Metrics& m) { return m.h; }
+    template <class R> int width(R&, const Metrics& m) { return m.s(28); }
     template <class R>
     void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics&) {
         if (hover) r.fill(x, y, w, h, p.hover());
-        r.textCentered(x, y, w, h, Fonts::logoGlyph, F_LOGO, p.accent());
+        r.textCentered(x, y, w, h, Fonts::logoGlyph, F_LOGO, hover ? p.accentText() : p.fg());
     }
-    Action click(int b, int, int, const Metrics&) { return b == 1 ? A_PICKER : A_NONE; }
+    Action click(int b, int, int, const Metrics&) { return b == 1 ? A_MENU : b == 2 ? A_TERMINAL : A_NONE; }
 };
 
+// Workspace numbers; the active one is drawn as a dot, as Omarchy does.
 template <class Model>
 struct WorkspacesW {
     static constexpr Slot slot = Slot::Left;
-    static int cell(const Metrics& m) { return m.s(22); }
+    static int cell(const Metrics& m) { return m.s(20); }
     template <class R> int width(R&, const Metrics& m) { return Model::visible() ? Model::count(m.mon) * cell(m) : 0; }
     template <class R>
     void paint(R& r, int x, int y, int, int h, const Palette& p, bool, const Metrics& m) {
         const int c = cell(m);
         const int n_ = Model::count(m.mon), act = Model::active(m.mon);
         for (int i = 0; i < n_; ++i) {
+            if (i == act) {
+                const int d = m.s(9);
+                r.round(x + i * c + (c - d) / 2, y + (h - d) / 2, d, d, m.s(3), p.fg(), CLR_NONE);
+                continue;
+            }
             wchar_t n[4];
-            wsprintfW(n, L"%d", i + 1);
-            const bool on = i == act;
-            r.textCentered(x + i * c, y, c, h, n, F_TEXT, on ? p[gen::C_BRIGHT_FOREGROUND] : p.dim());
-            if (on) r.fill(x + i * c + m.s(4), y + h - m.s(3), c - m.s(8), m.s(2), p.accent());
+            wsprintfW(n, L"%d", (i + 1) % 10);
+            r.textCentered(x + i * c, y, c, h, n, F_TEXT, p.faint());
         }
     }
     Action click(int b, int relX, int, const Metrics& m) {
@@ -85,92 +93,140 @@ struct WorkspacesW {
     }
 };
 
+// "Saturday 18:29" (Omarchy's dddd HH:mm). Left = calendar, right = next format.
 struct ClockW {
     static constexpr Slot slot = Slot::Center;
-    int fmt = 0;
+    static inline int fmt;
     static constexpr int kFormats = 3;
 
-    int format(wchar_t* o) {
-        static const wchar_t* const dn[] = {L"Sun", L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat"};
-        static const wchar_t* const mn[] = {L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
-                                            L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+    static int format(wchar_t* o) {
+        static const wchar_t* const dn[] = {L"Sunday", L"Monday", L"Tuesday", L"Wednesday", L"Thursday", L"Friday", L"Saturday"};
+        static const wchar_t* const mn[] = {L"January", L"February", L"March", L"April", L"May", L"June",
+                                            L"July", L"August", L"September", L"October", L"November", L"December"};
         SYSTEMTIME t;
         GetLocalTime(&t);
         switch (fmt) {
-            case 0: return wsprintfW(o, L"%02d:%02d", t.wHour, t.wMinute);
-            case 1: return wsprintfW(o, L"%s %d %s  %02d:%02d", dn[t.wDayOfWeek], t.wDay, mn[t.wMonth - 1], t.wHour, t.wMinute);
-            default: return wsprintfW(o, L"%04d-%02d-%02d  %02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+            case 0: return wsprintfW(o, L"%s %02d:%02d", dn[t.wDayOfWeek], t.wHour, t.wMinute);
+            case 1: return wsprintfW(o, L"%d %s %04d", t.wDay, mn[t.wMonth - 1], t.wYear);
+            default: return wsprintfW(o, L"%02d:%02d", t.wHour, t.wMinute);
         }
     }
     template <class R> int width(R& r, const Metrics& m) {
-        wchar_t b[40];
+        wchar_t b[48];
         int n = format(b);
         return r.measure(b, F_TEXT, n) + m.s(16);
     }
     template <class R>
     void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics&) {
-        wchar_t b[40];
+        wchar_t b[48];
         int n = format(b);
         if (hover) r.fill(x, y, w, h, p.hover());
-        r.textCentered(x, y, w, h, b, F_TEXT, p[gen::C_BRIGHT_FOREGROUND], n);
+        r.textCentered(x, y, w, h, b, F_TEXT, p.fg(), n);
     }
     Action click(int b, int, int, const Metrics&) {
-        if (b == 2 || b == 1) { fmt = (fmt + 1) % kFormats; return A_REPAINT; }
+        if (b == 1) return panelAction(P_CALENDAR);
+        if (b == 2) { fmt = (fmt + 1) % kFormats; return A_REPAINT; }
         return A_NONE;
     }
 };
 
-// Placeholder status glyph. Real behaviour (network, bluetooth, audio panels)
-// arrives with the Windows-specific session.
-template <wchar_t Glyph>
-struct IconW {
+// A status icon whose glyph comes from Src::glyph(). Optional Src hooks:
+//   visible(), font(), left() (handled instead of opening Panel), right(), scroll(dir).
+template <class Src, int Panel>
+struct GlyphW {
     static constexpr Slot slot = Slot::Right;
-    template <class R> int width(R&, const Metrics& m) { return m.s(24); }
+    template <class R> int width(R&, const Metrics& m) {
+        if constexpr (requires { Src::visible(); }) { if (!Src::visible()) return 0; }
+        return m.s(26);
+    }
     template <class R>
     void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics&) {
         if (hover) r.fill(x, y, w, h, p.hover());
-        wchar_t g[2] = {Glyph, 0};
-        r.textCentered(x, y, w, h, g, F_ICON, p.fg());
+        Font f = F_ICON;
+        if constexpr (requires { Src::font(); }) f = Src::font();
+        r.textCentered(x, y, w, h, Src::glyph(), f, hover ? p.accentText() : p.fg());
     }
-    Action click(int, int, int, const Metrics&) { return A_NONE; }
+    Action click(int b, int, int, const Metrics&) {
+        if (b == 1) {
+            if constexpr (requires { Src::left(); }) { Src::left(); return A_NONE; }
+            else return Panel >= 0 ? panelAction((PanelId)Panel) : A_NONE;
+        }
+        if (b == 2) {
+            if constexpr (requires { Src::right(); }) { Src::right(); return A_REPAINT; }
+        }
+        if (b == 3 && Panel >= 0) return panelAction((PanelId)Panel);
+        return A_NONE;
+    }
+    Action scroll(int dir, const Metrics&) {
+        if constexpr (requires { Src::scroll(dir); }) { Src::scroll(dir); return A_REPAINT; }
+        else return A_NONE;
+    }
 };
 
-struct BatteryW {
+// Keyboard layout ("EN"), shown only when more than one is installed; click = next layout.
+struct KeyboardW {
     static constexpr Slot slot = Slot::Right;
-    int pct = -1;
-
-    void refresh() {
-        SYSTEM_POWER_STATUS s;
-        pct = (GetSystemPowerStatus(&s) && !(s.BatteryFlag & 128) && s.BatteryLifePercent <= 100)
-                  ? s.BatteryLifePercent : -1;
+    static HKL current() {
+        HWND f = GetForegroundWindow();
+        return GetKeyboardLayout(f ? GetWindowThreadProcessId(f, nullptr) : 0);
+    }
+    static int label(wchar_t* o) {
+        o[0] = 0;
+        if (GetKeyboardLayoutList(0, nullptr) < 2) return 0;
+        const LANGID lang = LOWORD((ULONG_PTR)current());
+        int n = GetLocaleInfoW(MAKELCID(lang, SORT_DEFAULT), LOCALE_SISO639LANGNAME, o, 8);
+        if (n <= 1) return 0;
+        for (wchar_t* c = o; *c; ++c) if (*c >= L'a' && *c <= L'z') *c -= 32;
+        return n - 1;
     }
     template <class R> int width(R& r, const Metrics& m) {
-        refresh();
-        if (pct < 0) return 0;  // no battery: hide
         wchar_t b[8];
-        return m.s(24) + r.measure(b, F_SMALL, wsprintfW(b, L"%d%%", pct)) + m.s(4);
+        const int n = label(b);
+        return n ? r.measure(b, F_SMALL, n) + m.s(12) : 0;
+    }
+    template <class R>
+    void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics&) {
+        wchar_t b[8];
+        const int n = label(b);
+        if (hover) r.fill(x, y, w, h, p.hover());
+        r.textCentered(x, y, w, h, b, F_SMALL, p.fg(), n);
+    }
+    Action click(int b, int, int, const Metrics&) {
+        if (b != 1) return A_NONE;
+        if (HWND f = GetForegroundWindow()) PostMessageW(f, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)HKL_NEXT);
+        return A_REPAINT;
+    }
+};
+
+// Battery percentage + glyph (Omarchy's omarchy.power); just the glyph without a battery.
+// Left = power panel, right = show/hide the percentage.
+template <class Src>
+struct PowerW {
+    static constexpr Slot slot = Slot::Right;
+    static inline bool hidePct;
+    template <class R> int width(R& r, const Metrics& m) {
+        const int b = Src::battery();
+        if (b < 0 || hidePct) return m.s(26);
+        wchar_t t[8];
+        return r.measure(t, F_SMALL, wsprintfW(t, L"%d%%", b)) + m.s(30);
     }
     template <class R>
     void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics& m) {
         if (hover) r.fill(x, y, w, h, p.hover());
-        r.textCentered(x, y, m.s(24), h, L"\xE83F", F_ICON, pct <= 15 ? p[gen::C_RED] : p.fg());
-        wchar_t b[8];
-        int n = wsprintfW(b, L"%d%%", pct);
-        r.text(x + m.s(24), y, h, b, F_SMALL, p.fg(), n);
+        bool ch = false;
+        const int b = Src::battery(&ch);
+        const COLORREF c = b >= 0 && b <= 15 && !ch ? p[gen::C_RED] : hover ? p.accentText() : p.fg();
+        if (b < 0 || hidePct) { r.textCentered(x, y, w, h, Src::glyph(), F_ICON, c); return; }
+        wchar_t t[8];
+        const int n = wsprintfW(t, L"%d%%", b);
+        r.text(x + m.s(4), y, h, t, F_SMALL, c, n);
+        r.textCentered(x + w - m.s(24), y, m.s(22), h, Src::glyph(), F_ICON, c);
     }
-    Action click(int, int, int, const Metrics&) { return A_NONE; }
-};
-
-// Right-click quits (UI-only build has no other way to stop the shell).
-struct PowerW {
-    static constexpr Slot slot = Slot::Right;
-    template <class R> int width(R&, const Metrics& m) { return m.s(26); }
-    template <class R>
-    void paint(R& r, int x, int y, int w, int h, const Palette& p, bool hover, const Metrics&) {
-        if (hover) r.fill(x, y, w, h, p.hover());
-        r.textCentered(x, y, w, h, L"\xE7E8", F_ICON, p.fg());
+    Action click(int b, int, int, const Metrics&) {
+        if (b == 1) return panelAction(P_POWER);
+        if (b == 2) { hidePct = !hidePct; return A_REPAINT; }
+        return A_NONE;
     }
-    Action click(int b, int, int, const Metrics&) { return b == 2 ? A_QUIT : A_NONE; }
 };
 
 // -------------------------------------------------------------------- bar --
@@ -241,10 +297,20 @@ struct Bar : Ws... {
         else return A_NONE;
     }
 
-    void act(Action a) {
+    // Everything a click opens appears on the monitor of the bar that was clicked.
+    void act(Action a, int idx) {
         if (a == A_REPAINT) InvalidateRect(hwnd, nullptr, FALSE);
-        else if (a == A_PICKER) Bus::openPicker();
+        else if (a == A_PICKER) Bus::openPicker(m.mon);
+        else if (a == A_MENU) Bus::openMenu(m.mon);
+        else if (a == A_TERMINAL) Bus::openTerminal(m.mon);
         else if (a == A_QUIT) PostQuitMessage(0);
+        else if (a >= A_PANEL0 && idx >= 0) {
+            RECT wr;
+            GetWindowRect(hwnd, &wr);
+            const RECT anchor{wr.left + px[idx], wr.top, wr.left + px[idx] + pw[idx], wr.bottom};
+            Bus::openPanel(a - A_PANEL0, m.mon, anchor);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
     }
 
     void armClock() {
@@ -319,14 +385,14 @@ struct Bar : Ws... {
                 return 0;
             case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
                 int i = hit((short)LOWORD(lp));
-                if (i >= 0) act(click(i, msg == WM_LBUTTONUP ? 1 : msg == WM_RBUTTONUP ? 2 : 3, (short)LOWORD(lp)));
+                if (i >= 0) act(click(i, msg == WM_LBUTTONUP ? 1 : msg == WM_RBUTTONUP ? 2 : 3, (short)LOWORD(lp)), i);
                 return 0;
             }
             case WM_MOUSEWHEEL: {
                 POINT pt{(short)LOWORD(lp), (short)HIWORD(lp)};
                 ScreenToClient(h, &pt);
                 int i = hit(pt.x);
-                if (i >= 0) act(scroll(i, (short)HIWORD(wp) > 0 ? -1 : 1));
+                if (i >= 0) act(scroll(i, (short)HIWORD(wp) > 0 ? -1 : 1), i);
                 return 0;
             }
             case WM_TIMER:

@@ -5,8 +5,9 @@
 // hook is justified. It is kept as cheap as possible: no allocation, no calls except a
 // PostMessage when a chord matches, and it only swallows keys while Win is held and the chord
 // is in the table. Tiling chords are only swallowed while tiling is on, so with tiling off
-// Windows keeps all of its own Win-key shortcuts; only Win+Space (the menu) and the launchers
-// (Win+Enter, Win+Shift+B, which Windows leaves unbound) are always ours.
+// Windows keeps all of its own Win-key shortcuts; only Win+Space (the menu), the launchers
+// (Win+Enter, Win+Shift+B) and the theme picker (Win+Ctrl+T), which Windows leaves unbound,
+// are always ours.
 //
 // Win released alone (or after a swallowed chord) would open Start, so one dummy keystroke
 // (VK 0xE8, unassigned) is injected before Win-up, the same trick AutoHotkey uses. This makes
@@ -17,7 +18,7 @@
 
 enum Act : u8 {
     K_NONE, K_MENU, K_CLOSE, K_SPLIT, K_FLOAT, K_FULL, K_FULLW, K_MIN,
-    K_FOCUS, K_SWAP, K_WS, K_MOVE, K_WSREL, K_RESIZE, K_MONMOVE, K_TERMINAL, K_BROWSER,
+    K_FOCUS, K_SWAP, K_WS, K_MOVE, K_WSREL, K_RESIZE, K_MONMOVE, K_TERMINAL, K_BROWSER, K_PICKER,
 };
 
 struct KeyChord { u8 vk; u8 mods; u8 act; signed char arg; bool tilingOnly; };
@@ -29,6 +30,7 @@ inline constexpr KeyChord kChords[] = {
     {VK_SPACE, 0, K_MENU, 0, false},
     // Launchers: always on (Windows binds neither), and the app opens on the focused monitor.
     {VK_RETURN, 0, K_TERMINAL, 0, false},  {'B', M_SHIFT, K_BROWSER, 0, false},
+    {'T', M_CTRL, K_PICKER, 0, false},     // theme picker; always on (Windows leaves Win+Ctrl+T unbound)
     {'Q', 0, K_CLOSE, 0, true},        {'W', 0, K_CLOSE, 0, true},
     {'J', 0, K_SPLIT, 0, true},        {'T', 0, K_FLOAT, 0, true},
     {'F', 0, K_FULL, 2, true},         {'F', M_ALT, K_FULLW, 1, true},

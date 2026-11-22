@@ -21,3 +21,39 @@ Visual styles (msstyles\)
 -------------------------
 The bundled .msstyles files are recoloured copies of the Windows Aero visual style
 (aero.msstyles, (c) Microsoft Corporation), made by tools\make_msstyles.py.
+
+Omarchy icon font (embedded in archwindows.exe)
+-----------------------------------------------
+omarchy.ttf from https://github.com/basecamp/omarchy (default/fonts/omarchy/), used for the bar logo
+(U+E900) and the Claude mark (U+E90E). Embedded unmodified as src/omarchyfont.gen.h.
+
+Copyright (c) David Heinemeier Hansson. Released under the MIT License:
+
+Copyright (c) David Heinemeier Hansson
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+JetBrains Mono (assetsonts\)
+-------------------------------
+JetBrainsMono-Regular.ttf and JetBrainsMono-Bold.ttf, v2.304, from
+https://github.com/JetBrains/JetBrainsMono (the font Omarchy uses). Loaded privately by the shell
+for its own UI; not installed system-wide. Copyright 2020 The JetBrains Mono Project Authors.
+Licensed under the SIL Open Font License, Version 1.1; the full text is in
+assetsonts\JetBrainsMono-OFL.txt.

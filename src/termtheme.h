@@ -25,29 +25,31 @@ struct TermTheme {
 
     // ------------------------------------------------------------- palette --
     struct Ansi { COLORREF bg, fg, cursor, sel, c[16]; };
+    // Exactly Omarchy's terminal mapping (default/themed/alacritty.toml.tpl): black = background,
+    // white = foreground, bright black = muted, bright white = bright_foreground, cursor =
+    // bright_foreground, selection = selection (Omarchy's selection_background).
     static Ansi ansi(const Palette& p) {
-        const bool L = p.light;
         Ansi a;
         a.bg = p[gen::C_BACKGROUND];
         a.fg = p[gen::C_FOREGROUND];
-        a.cursor = p[gen::C_FOREGROUND];
+        a.cursor = p[gen::C_BRIGHT_FOREGROUND];
         a.sel = p[gen::C_SELECTION];
-        a.c[0] = L ? p[gen::C_FOREGROUND] : p[gen::C_DARKER_BACKGROUND];        // black
+        a.c[0] = p[gen::C_BACKGROUND];
         a.c[1] = p[gen::C_RED];
         a.c[2] = p[gen::C_GREEN];
         a.c[3] = p[gen::C_YELLOW];
         a.c[4] = p[gen::C_BLUE];
         a.c[5] = p[gen::C_MAGENTA];
         a.c[6] = p[gen::C_CYAN];
-        a.c[7] = L ? p[gen::C_DARKER_BACKGROUND] : p[gen::C_FOREGROUND];        // white
-        a.c[8] = p[gen::C_MUTED];                                                 // bright black
+        a.c[7] = p[gen::C_FOREGROUND];
+        a.c[8] = p[gen::C_MUTED];
         a.c[9] = p[gen::C_BRIGHT_RED];
         a.c[10] = p[gen::C_BRIGHT_GREEN];
         a.c[11] = p[gen::C_BRIGHT_YELLOW];
         a.c[12] = p[gen::C_BRIGHT_BLUE];
         a.c[13] = p[gen::C_BRIGHT_MAGENTA];
         a.c[14] = p[gen::C_BRIGHT_CYAN];
-        a.c[15] = L ? p[gen::C_DARK_BACKGROUND] : p[gen::C_BRIGHT_FOREGROUND];  // bright white
+        a.c[15] = p[gen::C_BRIGHT_FOREGROUND];
         return a;
     }
 
@@ -277,6 +279,84 @@ struct TermTheme {
         return splice(b, a, e - a, "", 0);
     }
 
+    // Terminal's window chrome (tab row, title bar, light/dark) is a separate "theme", not part of the
+    // colour scheme, so a light palette otherwise keeps Terminal's default dark tab row. Ours paints
+    // the tab row in the palette and follows its lightness.
+    static DWORD themeJson(const Palette& p, char* o) {
+        char row[16], tab[16];
+        hex(row, sys::mix(p.bg(), p.fg(), 8));
+        hex(tab, sys::mix(p.bg(), p.fg(), 4));
+        return (DWORD)wsprintfA(o,
+            "{\r\n            \"name\": \"%s\",\r\n"
+            "            \"window\": { \"applicationTheme\": \"%s\", \"useMica\": false },\r\n"
+            "            \"tabRow\": { \"background\": %s, \"unfocusedBackground\": %s },\r\n"
+            "            \"tab\": { \"background\": \"terminalBackground\", \"unfocusedBackground\": %s, \"showCloseButton\": \"hover\" }\r\n"
+            "        }", kName, p.light ? "light" : "dark", row, row, tab);
+    }
+    static bool putTheme(Buf& b, const Palette& p) {
+        char th[700];
+        const DWORD thN = themeJson(p, th);
+        Json j{b.p, (int)b.n};
+        const int root = j.root();
+        if (root < 0) return false;
+        const int arr = j.find(root, "themes");
+        char ins[800];
+        if (arr < 0) {
+            const DWORD n = (DWORD)wsprintfA(ins, "\r\n    \"themes\": [%s]%s", th, j.empty(root) ? "" : ",");
+            return splice(b, root + 1, 0, ins, n);
+        }
+        if (b.p[arr] != '[') return false;
+        for (int i = arr + 1;;) {
+            i = j.ws(i);
+            if (i >= j.n || b.p[i] == ']') break;
+            const int end = j.value(i);
+            if (b.p[i] == '{' && j.strIs(j.find(i, "name"), kName)) return splice(b, i, end - i, th, thN);
+            i = j.ws(end);
+            if (i < j.n && b.p[i] == ',') ++i;
+        }
+        const DWORD n = (DWORD)wsprintfA(ins, "\r\n        %s%s", th, j.empty(arr) ? "" : ",");
+        return splice(b, arr + 1, 0, ins, n);
+    }
+    // Root "theme": "archwindows"; the value it replaces goes to `prev` (or `absent`).
+    static bool pointTheme(Buf& b, char* prev, DWORD& prevN, bool& absent) {
+        Json j{b.p, (int)b.n};
+        const int root = j.root();
+        if (root < 0) return false;
+        static const char kVal[] = "\"archwindows\"";
+        const int t = j.find(root, "theme");
+        if (t < 0) {
+            char ins[64];
+            const DWORD n = (DWORD)wsprintfA(ins, "\r\n    \"theme\": %s%s", kVal, j.empty(root) ? "" : ",");
+            absent = true;
+            prevN = 0;
+            return splice(b, root + 1, 0, ins, n);
+        }
+        if (j.strIs(t, kName)) return false;
+        const int end = j.value(t);
+        absent = false;
+        prevN = (DWORD)(end - t) < 512 ? (DWORD)(end - t) : 0;
+        for (DWORD i = 0; i < prevN; ++i) prev[i] = b.p[t + i];
+        return splice(b, t, end - t, kVal, sizeof(kVal) - 1);
+    }
+    static bool restoreTheme(Buf& b, const char* prev, DWORD prevN, bool absent) {
+        Json j{b.p, (int)b.n};
+        const int root = j.root();
+        int keyAt = -1;
+        const int t = j.find(root, "theme", &keyAt);
+        if (t < 0 || !j.strIs(t, kName)) return false;  // user changed it since: keep theirs
+        const int end = j.value(t);
+        if (!absent) return prevN && splice(b, t, end - t, prev, prevN);
+        int a = keyAt, e = j.ws(end);
+        if (e < j.n && b.p[e] == ',') ++e;
+        else {
+            int k = a - 1;
+            while (k > root && (b.p[k] == ' ' || b.p[k] == '\t' || b.p[k] == '\r' || b.p[k] == '\n')) --k;
+            if (b.p[k] == ',') a = k;
+            e = end;
+        }
+        return splice(b, a, e - a, "", 0);
+    }
+
     static int wtPaths(wchar_t (*out)[MAX_PATH]) {
         static const wchar_t* const tails[] = {
             L"\\Packages\\Microsoft.WindowsTerminal_8wekyb3d8bbwe\\LocalState\\settings.json",
@@ -298,13 +378,28 @@ struct TermTheme {
     static bool has(HKEY k, const wchar_t* name) { return RegQueryValueExW(k, name, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS; }
 
     // ------------------------------------------------------------------ apply --
-    static void applyTerminal(const Ansi& a, HKEY bk) {
+    static void applyTerminal(const Ansi& a, const Palette& pal, HKEY bk) {
         wchar_t paths[3][MAX_PATH];
         const int np = wtPaths(paths);
         for (int i = 0; i < np; ++i) {
             Buf b;
             if (!readFile(paths[i], b)) continue;
             bool changed = putScheme(b, a);
+            changed |= putTheme(b, pal);
+            {
+                char prev[512];
+                DWORD prevN = 0;
+                bool absent = false;
+                if (pointTheme(b, prev, prevN, absent)) {
+                    changed = true;
+                    wchar_t vn[16];
+                    wsprintfW(vn, L"wtt%d", i);
+                    if (!has(bk, vn)) {
+                        if (absent) { const DWORD one = 1; RegSetValueExW(bk, vn, 0, REG_DWORD, (const BYTE*)&one, sizeof(one)); }
+                        else RegSetValueExW(bk, vn, 0, REG_BINARY, (const BYTE*)prev, prevN);
+                    }
+                }
+            }
             char prev[512];
             DWORD prevN = 0;
             bool absent = false;
@@ -542,7 +637,7 @@ struct TermTheme {
         HKEY bk = backupKey(true);
         if (!bk) return;
         const Ansi a = ansi(p);
-        applyTerminal(a, bk);
+        applyTerminal(a, p, bk);
         applyMintty(a, bk);
         applyBash(a, bk);
         applyConsole(a, bk);
@@ -561,10 +656,18 @@ struct TermTheme {
             wsprintfW(vn, L"wt%d", i);
             char prev[512];
             DWORD type = 0, sz = sizeof(prev);
-            if (RegQueryValueExW(bk, vn, nullptr, &type, (BYTE*)prev, &sz) != ERROR_SUCCESS) continue;
+            const bool hasScheme = RegQueryValueExW(bk, vn, nullptr, &type, (BYTE*)prev, &sz) == ERROR_SUCCESS;
+            char prevT[512];
+            DWORD typeT = 0, szT = sizeof(prevT);
+            wchar_t vt[16];
+            wsprintfW(vt, L"wtt%d", i);
+            const bool hasTheme = RegQueryValueExW(bk, vt, nullptr, &typeT, (BYTE*)prevT, &szT) == ERROR_SUCCESS;
+            if (!hasScheme && !hasTheme) continue;
             Buf b;
             if (!readFile(paths[i], b)) continue;
-            if (restoreDefaults(b, prev, type == REG_BINARY ? sz : 0, type == REG_DWORD)) writeFile(paths[i], b.p, b.n);
+            bool changed = hasScheme && restoreDefaults(b, prev, type == REG_BINARY ? sz : 0, type == REG_DWORD);
+            changed |= hasTheme && restoreTheme(b, prevT, typeT == REG_BINARY ? szT : 0, typeT == REG_DWORD);
+            if (changed) writeFile(paths[i], b.p, b.n);
             release(b);
         }
         restoreBash(bk);

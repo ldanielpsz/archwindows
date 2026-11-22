@@ -26,6 +26,22 @@ struct Assets {
         }
         root[0] = 0;
     }
+    // Omarchy's UI font, JetBrains Mono (OFL, assets\fonts\*.ttf), loaded for this process only:
+    // nothing is installed system-wide. Fonts::pickFace then finds it by name.
+    static void loadFonts() {
+        if (!ok) return;
+        wchar_t pat[MAX_PATH];
+        wsprintfW(pat, L"%s\\fonts\\*.ttf", root);
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileW(pat, &fd);
+        if (f == INVALID_HANDLE_VALUE) return;
+        do {
+            wchar_t p[MAX_PATH];
+            wsprintfW(p, L"%s\\fonts\\%s", root, fd.cFileName);
+            AddFontResourceExW(p, FR_PRIVATE, nullptr);
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
     static void themeFile(wchar_t* out, const wchar_t* theme, const wchar_t* file) {
         wsprintfW(out, L"%s\\themes\\%s\\%s", root, theme, file);
     }

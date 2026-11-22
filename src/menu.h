@@ -15,6 +15,7 @@
 #include "options.h"
 #include "tiler.h"  // tileutil::forceForeground, contains
 #include "winstyle.h"  // winutil::isOwn, isShellWindow
+#include "session.h"
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -47,14 +48,15 @@ struct DefaultApps {
 
 template <class Bus, class R, class Launch>
 struct Menu {
-    static constexpr int kMaxItems = 1536, kRows = 9;
+    static constexpr int kMaxItems = 1536, kRows = 11;
     static constexpr size_t kArena = 1 << 20;
     // Omarchy-style menu tree: "Go" (MAIN) lists the categories, each opens a titled submenu.
     enum Page : u8 { MAIN, APPS, LEARN, KEYS, TRIGGER, CAPTURE, TOGGLE, STYLE, SETUP, INSTALL, REMOVE, UPDATE,
                      SYSTEM, kPages };
-    enum : int { ID_NOOP = 1, ID_THEME, ID_QUIT, ID_RESTORE, ID_POWEROFF, ID_RESTART, ID_PAGE0 = 20,
+    enum : int { ID_NOOP = 1, ID_THEME, ID_QUIT, ID_RESTORE, ID_SESSION0 = 10, ID_PAGE0 = 20,
                  ID_OPT0 = 100, ID_APP = 1000 };  // ID_APP and above: launch arg (+ params)
-    struct Item { const wchar_t* label; const wchar_t* arg; int id; const wchar_t* icon; const wchar_t* params; u8 page; };
+    // folder: Start Menu folder an app lives in ("Inno Setup 6", "Windows Tools"), shown in its path.
+    struct Item { const wchar_t* label; const wchar_t* arg; int id; const wchar_t* icon; const wchar_t* params; u8 page; const wchar_t* folder; };
     static constexpr const wchar_t* kTitle[kPages] = {L"Go", L"Apps", L"Learn", L"Keybindings", L"Trigger", L"Capture",
                                                       L"Toggle", L"Style", L"Setup", L"Install", L"Remove", L"Update",
                                                       L"System"};
@@ -72,6 +74,8 @@ struct Menu {
     static inline size_t used, base;
     static inline Item* items;
     static inline int* view;
+    static inline HBITMAP* icons;  // per item: the app's own (colour) icon, loaded when first shown
+    static inline u8* iconTried;
     static inline int nItems, nView;
     static inline DWORD openedAt;
 
@@ -93,7 +97,7 @@ struct Menu {
     static void add(const wchar_t* label, const wchar_t* arg, int id, const wchar_t* icon = nullptr,
                     const wchar_t* params = nullptr) {
         if (nItems >= kMaxItems || !label) return;
-        items[nItems++] = {label, arg, id, icon, params, (u8)building};
+        items[nItems++] = {label, arg, id, icon, params, (u8)building, nullptr};
     }
     static void go(const wchar_t* icon, const wchar_t* label, Page p) { add(label, nullptr, ID_PAGE0 + (int)p, icon); }
     static void run(const wchar_t* icon, const wchar_t* label, const wchar_t* file, const wchar_t* params = nullptr) {
@@ -124,9 +128,9 @@ struct Menu {
         d[n] = 0;
         return d;
     }
-    static void sadd(Scan* s, const wchar_t* label, const wchar_t* arg) {
+    static void sadd(Scan* s, const wchar_t* label, const wchar_t* arg, const wchar_t* folder = nullptr) {
         if (s->n >= kMaxApps || !label || !arg) return;
-        s->items[s->n++] = {label, arg, ID_APP, nullptr, nullptr, (u8)APPS};
+        s->items[s->n++] = {label, arg, ID_APP, nullptr, nullptr, (u8)APPS, folder};
     }
 
     static bool endsWithI(const wchar_t* name, int n, const wchar_t* ext) {
@@ -148,7 +152,8 @@ struct Menu {
         return true;
     }
 
-    static void scanDir(Scan* s, const wchar_t* dir, int depth) {
+    // rel: the folder path below Start Menu\Programs ("" at the top), joined with " \x203A ".
+    static void scanDir(Scan* s, const wchar_t* dir, int depth, const wchar_t* rel = L"") {
         wchar_t pat[MAX_PATH];
         wsprintfW(pat, L"%s\\*", dir);
         WIN32_FIND_DATAW fd;
@@ -159,7 +164,13 @@ struct Menu {
             wchar_t full[MAX_PATH];
             wsprintfW(full, L"%s\\%s", dir, fd.cFileName);
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                if (depth < 6) scanDir(s, full, depth + 1);
+                if (depth < 6) {
+                    wchar_t sub[160];
+                    if (rel[0]) wsprintfW(sub, L"%.70s \x203A %.70s", rel, fd.cFileName);
+                    else lstrcpynW(sub, fd.cFileName, 160);
+                    const wchar_t* keep = sdup(s, sub, sys::wlen(sub));
+                    scanDir(s, full, depth + 1, keep ? keep : L"");
+                }
                 continue;
             }
             const int n = sys::wlen(fd.cFileName);
@@ -168,7 +179,7 @@ struct Menu {
             else if (endsWithI(fd.cFileName, n, L".appref-ms")) cut = 10;
             if (!cut) continue;
             if (startsWithI(fd.cFileName, L"uninstall") || startsWithI(fd.cFileName, L"unins0")) continue;  // uninstallers, not apps named "... Uninstall ..."
-            sadd(s, sdup(s, fd.cFileName, n - cut), sdup(s, full, sys::wlen(full)));
+            sadd(s, sdup(s, fd.cFileName, n - cut), sdup(s, full, sys::wlen(full)), rel[0] ? rel : nullptr);
         } while (FindNextFileW(f, &fd));
         FindClose(f);
     }
@@ -289,7 +300,8 @@ struct Menu {
                 go(L"\xE713", L"Setup", SETUP);
                 go(L"\xE896", L"Install", INSTALL);
                 go(L"\xE74D", L"Remove", REMOVE);
-                go(L"\xE777", L"Update", UPDATE);
+                go(L"\xE72C", L"Update", UPDATE);
+                run(L"\xE946", L"About", L"ms-settings:about");
                 go(L"\xE7E8", L"System", SYSTEM);
                 break;
             case APPS: break;  // filled in by the background scan (adoptScan)
@@ -306,6 +318,7 @@ struct Menu {
                     L"Super + Space  \x2014  this menu",
                     L"Super + Enter  \x2014  terminal (Windows Terminal, default profile)",
                     L"Super + Shift + B  \x2014  browser (your default)",
+                    L"Super + Ctrl + T  \x2014  theme picker",
                     L"Super + Q / W  \x2014  close window",
                     L"Super + J  \x2014  toggle split",
                     L"Super + T  \x2014  toggle floating",
@@ -349,6 +362,7 @@ struct Menu {
                 opt(L"Workspaces switch on all monitors together", Options::O_SYNCWS);
                 opt(L"Theme drives Windows dark/light and accent", Options::O_SYSTHEME);
                 opt(L"Theme drives terminal colours", Options::O_TERMTHEME);
+                opt(L"Theme drives Chrome / Brave colour", Options::O_BROWSERTHEME);
                 opt(L"Run at startup", Options::O_STARTUP);
                 break;
             case INSTALL:
@@ -372,8 +386,7 @@ struct Menu {
                 run(L"\xE121", L"Timezone", L"ms-settings:dateandtime");
                 break;
             case SYSTEM:
-                act(L"\xE7E8", L"Power off", ID_POWEROFF);
-                act(L"\xE777", L"Restart", ID_RESTART);
+                for (int k = 0; k < Session::kCount; ++k) act(Session::glyph[k], Session::label[k], ID_SESSION0 + k);
                 act(L"\xE711", L"Quit shell", ID_QUIT);
                 act(L"\xE72C", L"Close and reload Windows default shell", ID_RESTORE);
                 break;
@@ -403,17 +416,31 @@ struct Menu {
         }
         return false;
     }
+    static bool prefix(const wchar_t* s) {
+        for (int i = 0; i < qlen; ++i) {
+            wchar_t a = s[i], b = query[i];
+            if (!a) return false;
+            if (a >= L'A' && a <= L'Z') a += 32;
+            if (b >= L'A' && b <= L'Z') b += 32;
+            if (a != b) return false;
+        }
+        return true;
+    }
+    // A query lists matches from every page; labels that start with it come first (the best match
+    // sits on top, as in Omarchy's menu).
     static void refilter() {
         nView = 0;
-        for (int i = 0; i < nItems; ++i) {
-            if (!qlen) { if (items[i].page == page) view[nView++] = i; continue; }
-            if (!matches(items[i].label)) continue;
-            bool dup = false;  // the same setting can live on two pages (e.g. Tiling): list it once
-            for (int v = 0; v < nView && !dup; ++v)
-                dup = items[view[v]].id == items[i].id && items[view[v]].id != ID_APP && items[view[v]].id != ID_NOOP;
-            if (!dup) view[nView++] = i;
-        }
+        for (int pass = 0; pass < (qlen ? 2 : 1); ++pass)
+            for (int i = 0; i < nItems; ++i) {
+                if (!qlen) { if (items[i].page == page) view[nView++] = i; continue; }
+                if (!matches(items[i].label) || prefix(items[i].label) != (pass == 0)) continue;
+                bool dup = false;  // the same setting can live on two pages (e.g. Tiling): list it once
+                for (int v = 0; v < nView && !dup; ++v)
+                    dup = items[view[v]].id == items[i].id && items[view[v]].id != ID_APP && items[view[v]].id != ID_NOOP;
+                if (!dup) view[nView++] = i;
+            }
         sel = top = 0;
+        fit();
     }
 
     static void showPage(Page p) {
@@ -424,11 +451,53 @@ struct Menu {
     }
 
     // ------------------------------------------------------------ lifecycle --
-    static int width() { return sys::scale(560, dpi); }
-    static int rowH() { return sys::scale(30, dpi); }
-    static int inputH() { return sys::scale(44, dpi); }
-    static int pad() { return sys::scale(12, dpi); }
-    static int height() { return pad() * 2 + inputH() + kRows * rowH() + sys::scale(30, dpi); }
+    // Geometry. Search results and the Apps page are two lines (label + where it lives, Omarchy's
+    // path detail); other pages are one line.
+    static bool twoLine() { return qlen || page == APPS; }
+    static int width() { return sys::scale(380, dpi); }
+    static int rowH() { return sys::scale(twoLine() ? 48 : 40, dpi); }
+    static int inputH() { return sys::scale(46, dpi); }
+    static int pad() { return sys::scale(14, dpi); }
+    static int sepH() { return qlen && nView > 1 ? sys::scale(13, dpi) : 0; }  // under the best match
+    static int listTop() { return pad() + inputH() + sys::scale(6, dpi); }
+    static int rowY(int v) { return listTop() + (v - top) * rowH() + (v > 0 && top == 0 ? sepH() : 0); }
+    static int visibleRows() { return sys::imax(1, sys::imin(nView, kRows)); }
+    static int height() { return listTop() + visibleRows() * rowH() + (top == 0 ? sepH() : 0) + pad(); }
+    static void fit() {  // the window follows its content, like Omarchy's
+        if (!hwnd) return;
+        RECT rc;
+        GetWindowRect(hwnd, &rc);
+        if (rc.bottom - rc.top != height())
+            SetWindowPos(hwnd, nullptr, 0, 0, width(), height(), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    // Where a row lives, as Omarchy shows it: its parents joined with " > " ("Setup", "Trigger > Capture",
+    // "Apps > Inno Setup 6"); empty for rows on the top-level "Go" page.
+    static void crumb(const Item& it, wchar_t* o) {
+        const Page p = (Page)it.page;
+        o[0] = 0;
+        if (p == MAIN) return;
+        if (parent(p) != MAIN) wsprintfW(o, L"%s \x203A %s", kTitle[parent(p)], kTitle[p]);
+        else sys::wcopy(o, kTitle[p]);
+        if (it.folder) {
+            const int n = sys::wlen(o);
+            wsprintfW(o + n, L" \x203A %.80s", it.folder);
+        }
+    }
+    // The app's own icon (colour, from its shortcut or package), loaded the first time its row shows.
+    static HBITMAP appIcon(int i) {
+        if (!icons || iconTried[i]) return icons ? icons[i] : nullptr;
+        iconTried[i] = 1;
+        const Item& it = items[i];
+        if (it.id != ID_APP || !it.arg || it.page != APPS) return nullptr;  // apps only; other rows keep glyphs
+        IShellItemImageFactory* f = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(it.arg, nullptr, IID_PPV_ARGS(&f)))) {
+            const int px = sys::scale(32, dpi);
+            HBITMAP b = nullptr;
+            if (SUCCEEDED(f->GetImage(SIZE{px, px}, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &b))) icons[i] = b;
+            f->Release();
+        }
+        return icons[i];
+    }
 
     // The screen the user is working on: the focused window's monitor; with nothing focused (or
     // the desktop / our own windows focused), the monitor under the cursor.
@@ -443,16 +512,20 @@ struct Menu {
         return MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     }
 
-    static void open(Page p, int curDpi) {
+    // at: the monitor to open on (a bar's logo); null = the screen the user is working on.
+    static void open(Page p, int curDpi, HMONITOR at = nullptr) {
         if (hwnd) { SetForegroundWindow(hwnd); return; }
         dpi = curDpi;
-        mon = focusedMonitor();  // before our window takes the focus
+        mon = at ? at : focusedMonitor();  // before our window takes the focus
         InterlockedIncrement(&gen);
         used = 0;
         arena = (char*)VirtualAlloc(nullptr, kArena, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!arena) return;
         items = (Item*)take(sizeof(Item) * kMaxItems);
         view = (int*)take(sizeof(int) * kMaxItems);
+        icons = (HBITMAP*)take(sizeof(HBITMAP) * kMaxItems);  // the arena is zeroed by VirtualAlloc
+        iconTried = (u8*)take(kMaxItems);
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // shell icons; the UI thread keeps COM
         buildAll();
         showPage(p);
         if (!registered) {
@@ -487,6 +560,9 @@ struct Menu {
         freeScan(mine);
         mine = nullptr;
         scanning = false;
+        for (int i = 0; icons && i < kMaxItems; ++i) if (icons[i]) DeleteObject(icons[i]);
+        icons = nullptr;
+        iconTried = nullptr;
         if (arena) { VirtualFree(arena, 0, MEM_RELEASE); arena = nullptr; }
         items = nullptr;
         view = nullptr;
@@ -518,15 +594,10 @@ struct Menu {
         const HMONITOR target = mon;
         close();
         if (id >= ID_APP) Bus::launchOn(target);  // the app's first window opens on the menu's screen
-        if (id == ID_THEME) Bus::openPicker();
+        if (id == ID_THEME) Bus::openPicker(target);
         else if (id == ID_QUIT) Bus::quit();
         else if (id == ID_RESTORE) Bus::restoreDefault();
-        else if (id == ID_POWEROFF || id == ID_RESTART) {
-            const bool off = id == ID_POWEROFF;
-            if (MessageBoxW(nullptr, off ? L"Power off this computer now?" : L"Restart this computer now?",
-                            L"archwindows", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND) == IDYES)
-                Launch::run(L"shutdown.exe", off ? L"/s /t 0" : L"/r /t 0");
-        }
+        else if (id >= ID_SESSION0 && id < (int)ID_SESSION0 + (int)Session::kCount) Session::run(id - ID_SESSION0);
         else if (id >= ID_APP) Launch::run(path, params[0] ? params : nullptr);
     }
 
@@ -541,52 +612,75 @@ struct Menu {
     }
 
     // --------------------------------------------------------------- paint --
+    // Omarchy's menu: the prompt ("Go\u2026", "Capture\u2026") is the input line, rows carry a glyph (or
+    // the app's own colour icon) and, in search results and Apps, the path they live under; submenus
+    // end in a chevron. Lock / sleep / sign out / restart / shut down are rows under System.
+
     static void paint(HDC dc, int cw, int ch, const Palette& p) {
         R r(dc, cw, ch);
         r.fill(0, 0, cw, ch, p.bg());
-        const int pd = pad(), rh = rowH(), ih = inputH();
+        const int pd = pad(), rh = rowH(), ih = inputH(), s4 = sys::scale(4, dpi);
+        const COLORREF bright = p.fg();  // Omarchy menu text is the foreground
 
-        // Input row: prompt, query, caret.
-        r.text(pd, pd, ih, kTitle[page], F_TITLE, p.accent());
-        const int px = pd + r.measure(kTitle[page], F_TITLE) + sys::scale(14, dpi);
-        {
-            r.text(px, pd, ih, query, F_TEXT, p.fg(), qlen);
-            const int cx = px + r.measure(query, F_TEXT, qlen);
-            r.fill(cx + 1, pd + (ih - sys::scale(16, dpi)) / 2, sys::scale(2, dpi), sys::scale(16, dpi), p.accent());
-            if (!qlen) r.text(px + sys::scale(8, dpi), pd, ih, L"type to search", F_TEXT, p.dim());
+        // Input line: the page's prompt until something is typed.
+        const int ix = pd + sys::scale(4, dpi);
+        if (qlen) {
+            r.text(ix, pd, ih, query, F_ROW, bright, qlen);
+            const int cx = ix + r.measure(query, F_ROW, qlen);
+            r.fill(cx + 1, pd + (ih - sys::scale(18, dpi)) / 2, sys::scale(2, dpi), sys::scale(18, dpi), p.accent());
+        } else {
+            wchar_t prompt[32];
+            wsprintfW(prompt, L"%s\x2026", kTitle[page]);
+            r.text(ix, pd, ih, prompt, F_ROW, p.dim());
         }
-        r.fill(pd, pd + ih, cw - 2 * pd, 1, sys::mix(p.bg(), p.fg(), 20));
 
         // Rows.
-        const int y0 = pd + ih + sys::scale(4, dpi);
         const int last = sys::imin(nView, top + kRows);
         for (int v = top; v < last; ++v) {
-            const Item& it = items[view[v]];
-            const int y = y0 + (v - top) * rh;
+            const int i = view[v];
+            const Item& it = items[i];
+            const int y = rowY(v);
             const bool on = v == sel;
-            if (on) r.fill(pd, y, cw - 2 * pd, rh, p.selected());
-            int tx = pd + sys::scale(10, dpi);
+            if (on) r.round(pd, y, cw - 2 * pd, rh, sys::scale(6, dpi), p.menuSelected(), p.menuSelectedBorder());
+            int tx = pd + sys::scale(14, dpi);
+            const int isz = sys::scale(20, dpi);
+            wchar_t from[200];
+            from[0] = 0;
+            if (twoLine()) crumb(it, from);
+            const bool sub = from[0] != 0;
+            const int iy = sub ? y + sys::scale(6, dpi) : y + (rh - isz) / 2;
             if (it.id >= ID_OPT0 && it.id < ID_OPT0 + (int)Options::O_COUNT) {
                 const bool c = Options::get(it.id - ID_OPT0);
-                r.textCentered(tx, y, sys::scale(18, dpi), rh, c ? L"\xE73A" : L"\xE739", F_ICON, c ? p.accent() : p.dim());
-                tx += sys::scale(28, dpi);
-            } else if (it.icon) {
-                r.textCentered(tx, y, sys::scale(18, dpi), rh, it.icon, F_ICON, on ? p.accent() : p.dim());
-                tx += sys::scale(28, dpi);
+                r.textCentered(tx, iy, isz, isz, c ? L"\xE73A" : L"\xE739", F_ICON, c ? p.accent() : p.dim());
+                tx += sys::scale(32, dpi);
+            } else if (HBITMAP b = appIcon(i)) {
+                r.alpha(tx, iy, isz, isz, b);
+                tx += sys::scale(32, dpi);
+            } else if (it.icon || it.id == ID_APP) {
+                r.textCentered(tx, iy, isz, isz, it.icon ? it.icon : L"\xE7C3", F_ICON, on ? p.accentText() : p.fg());
+                tx += sys::scale(32, dpi);
             }
-            r.text(tx, y, rh, it.label, F_TEXT, on ? p.accent() : p.fg());
-            if (qlen && it.page != MAIN) {  // where this result lives
-                const wchar_t* from = kTitle[it.page];
-                r.text(cw - pd - sys::scale(10, dpi) - r.measure(from, F_SMALL), y, rh, from, F_SMALL, p.dim());
-            }
+            const COLORREF lc = on ? p.accentText() : bright;
+            if (sub) {  // two lines: label, then where it lives
+                r.textClipped(tx, y + s4, sys::scale(24, dpi), cw - pd - sys::scale(36, dpi) - tx, it.label, F_ROW, lc);
+                r.textClipped(tx, y + sys::scale(27, dpi), sys::scale(16, dpi), cw - pd - sys::scale(12, dpi) - tx, from, F_SMALL, p.dim());
+            } else r.textClipped(tx, y, rh, cw - pd - sys::scale(36, dpi) - tx, it.label, F_ROW, lc);
+            if (it.id >= ID_PAGE0 && it.id < ID_PAGE0 + (int)kPages)
+                r.textCentered(cw - pd - sys::scale(30, dpi), y, sys::scale(20, dpi), rh, L"\xE76C", F_ICON, p.dim());
+            if (v == 0 && top == 0 && sepH())
+                r.fill(pd, y + rh + sepH() / 2, cw - 2 * pd, 1, sys::mix(p.bg(), p.fg(), 16));
         }
         if (!nView)
-            r.text(pd + sys::scale(10, dpi), y0, rh, scanning && (qlen || page == APPS) ? L"loading apps..." : L"no matches",
-                   F_TEXT, p.dim());
+            r.text(pd + sys::scale(14, dpi), listTop(), rh,
+                   scanning && (qlen || page == APPS) ? L"Loading apps\x2026" : L"No matches", F_ROW, p.dim());
 
-        const wchar_t* hint = qlen ? L"Enter select   Esc back" : page == MAIN ? L"Enter open   Esc close" : hasToggles() ? L"Enter/Space toggle   Esc back" : L"Enter select   Esc back";
-        r.text(cw - pd - r.measure(hint, F_SMALL), ch - sys::scale(24, dpi), sys::scale(20, dpi), hint, F_SMALL, p.dim());
-        r.frame(0, 0, cw, ch, sys::scale(2, dpi), p.accent());
+        r.frame(0, 0, cw, ch, sys::scale(2, dpi), p.menuBorder());
+    }
+
+    static int rowAt(int my) {
+        for (int v = top; v < sys::imin(nView, top + kRows); ++v)
+            if (my >= rowY(v) && my < rowY(v) + rowH()) return v;
+        return -1;
     }
 
     static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -627,11 +721,13 @@ struct Menu {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             case WM_LBUTTONDOWN: {
-                const int row = ((short)HIWORD(lp) - (pad() + inputH() + sys::scale(4, dpi))) / rowH();
-                if ((short)HIWORD(lp) >= pad() + inputH() && row >= 0 && top + row < nView) {
-                    sel = top + row;
-                    activate();
-                }
+                const int v = rowAt((short)HIWORD(lp));
+                if (v >= 0) { sel = v; activate(); }
+                return 0;
+            }
+            case WM_MOUSEMOVE: {
+                const int v = rowAt((short)HIWORD(lp));
+                if (v >= 0 && v != sel) { sel = v; InvalidateRect(h, nullptr, FALSE); }
                 return 0;
             }
             case WM_MOUSEWHEEL: move((short)HIWORD(wp) > 0 ? -1 : 1); return 0;
