@@ -4,7 +4,7 @@
   Builds build\archwindows-setup-<Version>.exe: archwindows + assets + bundled visual styles + SecureUxTheme.
 
 .DESCRIPTION
-  1. Builds build\archwindows.exe with build.cmd if it is missing (or -Rebuild).
+  1. Builds build\archwindows.exe with build.cmd if it is missing, carries another version, or -Rebuild.
   2. Downloads the pinned SecureUxTheme MSIs from the project's GitHub release into
      build\installer\deps and checks them against the SHA-256 digests GitHub publishes for the
      release. A mismatch deletes the file and stops the build.
@@ -43,9 +43,10 @@ $UxtLicenseUrl = "https://raw.githubusercontent.com/namazso/SecureUxTheme/v$UxtV
 
 # ---- 1. the shell itself -------------------------------------------------------------------
 $exe = Join-Path $root 'build\archwindows.exe'
-if ($Rebuild -or -not (Test-Path $exe)) {
-    Write-Host 'Building archwindows.exe...' -ForegroundColor Cyan
-    & cmd.exe /c "`"$root\build.cmd`""
+$stamped = if (Test-Path $exe) { (Get-Item $exe).VersionInfo.ProductVersion } else { $null }
+if ($Rebuild -or $stamped -ne $Version) {
+    Write-Host "Building archwindows.exe $Version..." -ForegroundColor Cyan
+    & cmd.exe /c "`"$root\build.cmd`" $Version"
     if ($LASTEXITCODE -ne 0) { throw "build.cmd failed ($LASTEXITCODE)" }
 }
 

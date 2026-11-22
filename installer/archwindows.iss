@@ -28,6 +28,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 UninstallDisplayIcon={app}\archwindows.exe
+SetupIconFile=src\archwindows.ico
 UninstallDisplayName=archwindows
 WizardStyle=modern
 Compression=lzma2/max

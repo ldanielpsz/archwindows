@@ -1,0 +1,47 @@
+// Exe icon (the Omarchy mark, made by tools/make_icon.py) and version info.
+// build.cmd passes AW_VER_MAJOR/MINOR/PATCH (from its version argument, default 0.0.0).
+#include <winver.h>
+
+#ifndef AW_VER_MAJOR
+#define AW_VER_MAJOR 0
+#endif
+#ifndef AW_VER_MINOR
+#define AW_VER_MINOR 0
+#endif
+#ifndef AW_VER_PATCH
+#define AW_VER_PATCH 0
+#endif
+#define AW_STR2(x) #x
+#define AW_STR(x) AW_STR2(x)
+#define AW_VER_STR AW_STR(AW_VER_MAJOR) "." AW_STR(AW_VER_MINOR) "." AW_STR(AW_VER_PATCH)
+
+1 ICON "archwindows.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    AW_VER_MAJOR, AW_VER_MINOR, AW_VER_PATCH, 0
+ PRODUCTVERSION AW_VER_MAJOR, AW_VER_MINOR, AW_VER_PATCH, 0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "archwindows"
+            VALUE "FileDescription",  "archwindows shell"
+            VALUE "FileVersion",      AW_VER_STR
+            VALUE "InternalName",     "archwindows"
+            VALUE "LegalCopyright",   "See LICENSE"
+            VALUE "OriginalFilename", "archwindows.exe"
+            VALUE "ProductName",      "archwindows"
+            VALUE "ProductVersion",   AW_VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

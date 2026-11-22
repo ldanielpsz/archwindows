@@ -1,0 +1,86 @@
+name: build
+
+# Every push / PR: build archwindows.exe and the installer, keep them as workflow artifacts.
+# A pushed tag vX.Y.Z: same build stamped X.Y.Z, published as a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Visual styles made by tools/make_msstyles.py and bundled in the installer (space separated).
+  STYLES: retro-82
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') {
+            $v = $Matches[1]
+          } else {
+            $v = '0.0.0'
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "version $v"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Visual styles
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -q pillow numpy
+          foreach ($s in $env:STYLES -split '\s+' | Where-Object { $_ }) {
+            python tools/make_msstyles.py $s
+            if ($LASTEXITCODE -ne 0) { throw "make_msstyles $s failed" }
+          }
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build exe + installer
+        shell: pwsh
+        run: ./installer/build-installer.ps1 -Version ${{ steps.ver.outputs.version }} -Rebuild
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = Get-Item build/archwindows.exe, build/archwindows-setup-*.exe
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content build/SHA256SUMS.txt -Encoding ascii
+          Get-Content build/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archwindows-${{ steps.ver.outputs.version }}
+          path: |
+            build/archwindows.exe
+            build/archwindows-setup-*.exe
+            build/SHA256SUMS.txt
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: archwindows ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            build/archwindows-setup-${{ steps.ver.outputs.version }}.exe
+            build/archwindows.exe
+            build/SHA256SUMS.txt

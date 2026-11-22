@@ -175,6 +175,18 @@ script; needs a restart). A wizard page picks the style to apply. If SecureUxThe
 run, the style is applied at the first sign-in after restarting. Uninstalling switches back to a stock theme
 if an Arch style is active, and leaves SecureUxTheme installed (it has its own entry in Installed apps).
 
+The exe and the setup both use `src\archwindows.ico`, the Omarchy mark rendered by `python tools\make_icon.py`.
+`build.cmd [version]` stamps the version into the exe.
+
+## Releases
+
+`.github/workflows/build.yml` builds the exe and installer on every push and pull request (kept as workflow
+artifacts). Pushing a tag `vX.Y.Z` builds version X.Y.Z and publishes it as a GitHub Release with the
+installer, the exe and `SHA256SUMS.txt`:
+
+    git tag v0.3.0
+    git push origin v0.3.0
+
 ## Policy-based design
 
 Each concern is a small type with a static interface; `main.cpp` is the only place they are wired.
