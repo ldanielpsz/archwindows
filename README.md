@@ -33,7 +33,7 @@ Windows' Win+Space input-language switch (use Alt+Shift for that).
 | Workspaces switch on all monitors together | on | `Super+1..0`, `Super+Tab` and the bar's workspace numbers switch every monitor to its own workspace N, so a workspace spans all screens. Off: only the active monitor switches |
 | Theme drives Windows dark/light and accent | off | Explorer, Settings and other apps follow the theme's dark/light mode and accent; originals restored on quit |
 | Theme drives Chrome / Brave colour | on | as Omarchy does: the theme's browser colour (Omarchy's `chromium.theme`, else a neutral seed: `#1c2027` dark, light grey for light themes) through the per-user `BrowserThemeColor` policy, plus `BrowserColorScheme=device` so light/dark follows Windows (Chrome may show "managed by your organization"; running browsers are told to reload policies, as Omarchy does). Removed when the option is turned off |
-| Theme drives terminal colours | off | Windows Terminal (live, via an `archwindows` scheme in settings.json), mintty/Git Bash (`.minttyrc`, new windows) and the classic console (`HKCU\Console`, new windows) use the theme's colours. Originals are backed up and put back when the option is turned off |
+| Theme drives terminal colours | off | Windows Terminal (live, via an `archwindows` scheme in settings.json), mintty/Git Bash (`.minttyrc`, new windows) and the classic console (`HKCU\Console`, new windows) use the theme's colours; Windows Terminal also gets Omarchy's terminal transparency (98% focused / 96% unfocused, Kanagawa 99/98). Originals are backed up and put back when the option is turned off |
 
 ## Tiling
 
@@ -53,9 +53,10 @@ cannot take them:
 | `Super+Arrows` | focus the window in that direction |
 | `Super+Shift+Arrows` | swap with the window in that direction |
 | `Super+J` | toggle the split direction of the focused window's pair |
-| `Super+T` | float <-> tile the focused window (floating windows keep their title bar and old size) |
-| `Super+F` | fullscreen (whole work area) |
-| `Super+Alt+F` | full width (keeps gaps) |
+| `Super+T` | float <-> tile the focused window. As Hyprland: it floats at its last floating size (the size it had before it was tiled), centred where its tile was and raised, 10 px smaller all round if that is the tile's size. Floating windows keep their title bar and stay above the tiles of their workspace (focusing a tile puts them back on top) |
+| `Super+O` | pop the window out, as Omarchy does: floating 1300x900, centred, pinned on top and carried along on workspace switches, title bar back so it can be dragged. Moved to another monitor (keys or drag) it is centred there. Again (or `Super+T`) puts it back into the tiles. On a window that is not tiled (floating, or one the shell never picked up, such as a window opened by another program) it tiles it |
+| `Super+F` | fullscreen: exactly the whole monitor, over the bar, never onto the next monitor. As Omarchy (`on_focus_under_fullscreen = 1`), focusing another tiled window on that workspace makes it the fullscreen one; a floating one ends fullscreen |
+| `Super+Alt+F` | full width (keeps gaps); focus passes it on the same way |
 | `Super+M` | minimise |
 | `Super+1..0` | go to workspace 1-10 |
 | `Super+Shift+1..0` | move the focused window to workspace 1-10 |
@@ -177,6 +178,29 @@ if an Arch style is active, and leaves SecureUxTheme installed (it has its own e
 
 The exe and the setup both use `src\archwindows.ico`, the Omarchy mark rendered by `python tools\make_icon.py`.
 `build.cmd [version]` stamps the version into the exe.
+
+### Tiling elevated windows (uiAccess)
+
+Windows does not let a normal program control windows that run as administrator: while one has
+focus the Super-key hook is not even called, and moving it is refused. A *uiAccess* program (the
+mechanism screen readers use) may, without being elevated itself. From an elevated PowerShell, on a
+machine where archwindows is installed:
+
+    powershell -ExecutionPolicy Bypass -File tools\uiaccess.ps1 [-Version 0.3.1]
+
+It builds with `build.cmd <version> uiaccess` (embeds `src\uiaccess.manifest`), stops the shell, creates
+a self-signed code-signing certificate, trusts it in `LocalMachine\Root`, signs the exe, **deletes the
+private key** (nothing else can ever be signed with that trust; each run makes a fresh certificate and
+removes the old one), installs the exe into Program Files and restarts the shell. `-Remove` goes back to
+the ordinary build and removes the certificate.
+
+- A uiAccess exe only starts when signed and run from a secure folder, so a uiAccess build will not
+  run from `build\`. Development builds (no `uiaccess` argument) are unaffected.
+- Child processes inherit uiAccess, so everything the shell starts (menu, `Super+Enter`, browser,
+  Settings links) goes through Explorer (`src\launch.h`) and gets an ordinary token.
+- uiAccess top-most windows sit above other apps' top-most windows, so the bar steps under a
+  `Super+F` window itself instead of relying on Windows' full-screen notice.
+- Running the installer again puts the ordinary build back; run the script again afterwards.
 
 ## Releases
 

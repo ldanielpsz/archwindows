@@ -202,9 +202,19 @@ selection text colour, so selected text keeps its own colour there.
 `settings.json` is edited in place by a small JSONC scanner (comments kept, only our members
 touched). Without the window theme, light palettes kept Terminal's default dark tab row.
 
-Originals (previous `colorScheme`, previous `theme`, `.minttyrc`, the console table) are backed up
-once under `HKCU\Software\ArchWindows\TermThemeBackup` (values `wt<N>`, `wtt<N>`, `mintty`,
-`console`) and restored when the option is turned off. A value the user changed since is left alone.
+**Transparency: Omarchy's terminal opacity.** Omarchy makes every terminal see-through with a
+Hyprland window rule (`default/hypr/windows.lua`: `o.transparent_window({ tag = "terminal" })`,
+0.985 focused / 0.96 unfocused), so it comes with every theme; the one theme override is Kanagawa
+(`themes/kanagawa/hyprland.lua`: 0.99 / 0.985, its backdrop is too strong). Windows Terminal gets
+`profiles.defaults.opacity` 98 and `unfocusedAppearance: { "opacity": 96 }` (Kanagawa 99 / 98;
+Terminal takes whole percents), plain see-through like Hyprland's default (blur off), no acrylic.
+Not replicated: Omarchy's Appearance > Window Opacity menu (opaque / transparent / glassy at 0.75
+with blur) and Super+Backspace (toggle one window's transparency).
+
+Originals (previous `colorScheme`, `opacity`, `unfocusedAppearance`, previous `theme`,
+`.minttyrc`, the console table) are backed up once under `HKCU\Software\ArchWindows\TermThemeBackup`
+(values `wt<N>`, `wto<N>`, `wtu<N>`, `wtt<N>`, `mintty`, `console`; `<value>.ours` holds what was last
+written, so a value the user changed since is recognised) and restored when the option is turned off. A value the user changed since is left alone.
 
 Not done: Terminal's font. Omarchy's terminals use JetBrains Mono; Windows Terminal needs the font
 installed for the user, and `profiles.defaults.font.face` set.

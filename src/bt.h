@@ -12,6 +12,7 @@
 //   is open. Bluetooth LE devices that only advertise are left to Settings ("Add device").
 #pragma once
 #include "sys.h"
+#include "launch.h"
 #include <bluetoothapis.h>
 #include <mmdeviceapi.h>
 #include <devicetopology.h>
@@ -20,6 +21,7 @@
 #include <winstring.h>
 #include <windows.devices.radios.h>
 #include "ui.h"
+#include "confirm.h"
 #include "audio.h"
 
 struct BtApi {
@@ -322,13 +324,17 @@ struct Bt {
 
     static void toggleConnect(const BLUETOOTH_DEVICE_INFO& d) {
         if (audioCmd(d.Address, !d.fConnected)) note(d.fConnected ? L"Disconnecting %s\x2026" : L"Connecting %s\x2026", d.szName);
-        else ShellExecuteW(nullptr, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
+        else launch::run(L"ms-settings:bluetooth", nullptr);
     }
     static void forget(const BLUETOOTH_DEVICE_INFO& d) {
         wchar_t q[320];
         wsprintfW(q, L"Forget %s? You will need to pair it again to use it.", d.szName);
-        if (MessageBoxW(nullptr, q, L"archwindows", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND) == IDYES)
-            BtApi::remove(&d.Address);
+        forgetAddr = d.Address;
+        Confirm::ask(L"ç02", L"Forget device", q, L"Forget", forgetNow, nullptr);  // themed, see confirm.h
+    }
+    static inline BLUETOOTH_ADDRESS forgetAddr;
+    static void forgetNow(void*) {
+        BtApi::remove(&forgetAddr);
         listPaired();
     }
     static void pair(const BLUETOOTH_DEVICE_INFO& d) {
@@ -389,7 +395,7 @@ struct Bt {
         const int h = u.hero(L"\xE702", F_HERO, u.p.fg(), L"Bluetooth", meta, hasRadio && radio >= 0 ? (int)radio : -1,
                              btn, hasRadio ? 1 : 0);
         if (h == 1) radioAsync(radio ? 0 : 1);
-        else if (h == 2) { ShellExecuteW(nullptr, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL); u.wantClose = true; }
+        else if (h == 2) { launch::run(L"ms-settings:bluetooth", nullptr); u.wantClose = true; }
         if (!hasRadio) {
             u.gap(10);
             u.notice(L"No Bluetooth adapter was found on this computer.", u.p.accent());

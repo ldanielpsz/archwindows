@@ -8,6 +8,7 @@
 // credential is read beyond whether a sign-in exists and its plan name.
 #pragma once
 #include "sys.h"
+#include "launch.h"
 #include "ui.h"
 
 struct Agents {
@@ -257,10 +258,10 @@ struct Agents {
     static void launch(const wchar_t* args) {
         wchar_t cmd[96];
         wsprintfW(cmd, L"claude%s%s", args ? L" " : L"", args ? args : L"");
-        if ((INT_PTR)ShellExecuteW(nullptr, L"open", L"wt.exe", cmd, nullptr, SW_SHOWNORMAL) > 32) return;
+        if (launch::run(L"wt.exe", cmd)) return;
         wchar_t k[112];
         wsprintfW(k, L"/k %s", cmd);
-        ShellExecuteW(nullptr, L"open", L"cmd.exe", k, nullptr, SW_SHOWNORMAL);
+        launch::run(L"cmd.exe", k);
     }
 
     // ---- panel ----
@@ -292,7 +293,7 @@ struct Agents {
         } else if (!haveDir) {
             u.gap(10);
             if (u.notice(L"Claude Code is not installed. Click to open its install page.", u.p.accent())) {
-                ShellExecuteW(nullptr, L"open", L"https://docs.anthropic.com/en/docs/claude-code/setup", nullptr, nullptr, SW_SHOWNORMAL);
+                launch::run(L"https://docs.anthropic.com/en/docs/claude-code/setup", nullptr);
                 u.wantClose = true;
             }
         }

@@ -200,6 +200,7 @@ struct WindowWatcher {
                 break;
             }
             case EVENT_OBJECT_SHOW:
+                Layout::onShow(h);    // an app re-showing a window hidden with another workspace
                 Bus::windowShown(h);  // a just-launched app may be moved to the menu's monitor first
                 handle(h, h == GetForegroundWindow());
                 break;

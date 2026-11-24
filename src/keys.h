@@ -18,7 +18,7 @@
 
 enum Act : u8 {
     K_NONE, K_MENU, K_CLOSE, K_SPLIT, K_FLOAT, K_FULL, K_FULLW, K_MIN,
-    K_FOCUS, K_SWAP, K_WS, K_MOVE, K_WSREL, K_RESIZE, K_MONMOVE, K_TERMINAL, K_BROWSER, K_PICKER,
+    K_FOCUS, K_SWAP, K_WS, K_MOVE, K_WSREL, K_RESIZE, K_MONMOVE, K_TERMINAL, K_BROWSER, K_PICKER, K_POP,
 };
 
 struct KeyChord { u8 vk; u8 mods; u8 act; signed char arg; bool tilingOnly; };
@@ -34,7 +34,7 @@ inline constexpr KeyChord kChords[] = {
     {'Q', 0, K_CLOSE, 0, true},        {'W', 0, K_CLOSE, 0, true},
     {'J', 0, K_SPLIT, 0, true},        {'T', 0, K_FLOAT, 0, true},
     {'F', 0, K_FULL, 2, true},         {'F', M_ALT, K_FULLW, 1, true},
-    {'M', 0, K_MIN, 0, true},
+    {'M', 0, K_MIN, 0, true},         {'O', 0, K_POP, 0, true},   // Omarchy: pop window out (float & pin)
     {VK_LEFT, 0, K_FOCUS, 0, true},    {VK_RIGHT, 0, K_FOCUS, 1, true},
     {VK_UP, 0, K_FOCUS, 2, true},      {VK_DOWN, 0, K_FOCUS, 3, true},
     {VK_LEFT, M_SHIFT, K_SWAP, 0, true},  {VK_RIGHT, M_SHIFT, K_SWAP, 1, true},
@@ -62,6 +62,14 @@ struct LowLevelKeys {
     static inline HWND target;
     static inline bool masked;
     static inline u8 mods;
+    // Win keys the hook saw go down and not up yet (bit 0 left, bit 1 right). A chord needs this
+    // AND Windows' own key state: either alone can go stale. Win+L (or Ctrl+Alt+Del, a UAC prompt)
+    // releases Win on the secure desktop, where neither the hook nor the key state sees it, so
+    // Win stayed "held" and plain typing ran chords: Shift+1 ("!") moved the window, Q closed it.
+    // Switching desktops forgets it for the same reason.
+    static inline u8 win;
+    static inline HWINEVENTHOOK deskHook;
+    static void CALLBACK onDesktop(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) { win = 0; masked = false; }
 
     static int lookup(u8 vk) {
         for (int i = 0; i < kChordCount; ++i)
@@ -95,6 +103,8 @@ struct LowLevelKeys {
                 const bool down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
                 const DWORD vk = k->vkCode;
                 if (vk == VK_LWIN || vk == VK_RWIN) {
+                    const u8 bit = vk == VK_LWIN ? 1 : 2;
+                    if (down) win |= bit; else win &= (u8)~bit;
                     // Win released: if no chord masked it yet, a bare tap would open Start. Inject
                     // the dummy key now, while Win is still logically down, so Windows sees a
                     // shortcut instead. Start never opens; other Win+<key> combos are untouched.
@@ -104,7 +114,7 @@ struct LowLevelKeys {
                     }
                 } else if (vk < 256 && vk != VK_LSHIFT && vk != VK_RSHIFT && vk != VK_LCONTROL &&
                            vk != VK_RCONTROL && vk != VK_LMENU && vk != VK_RMENU && vk != VK_SHIFT &&
-                           vk != VK_CONTROL && vk != VK_MENU && (held(VK_LWIN) || held(VK_RWIN))) {
+                           vk != VK_CONTROL && vk != VK_MENU && win && (held(VK_LWIN) || held(VK_RWIN))) {
                     mods = currentMods();
                     const int i = lookup((u8)vk);
                     if (i >= 0) {
@@ -123,9 +133,13 @@ struct LowLevelKeys {
     static void start(HWND bar) {
         target = bar;
         hook = SetWindowsHookExW(WH_KEYBOARD_LL, proc, GetModuleHandleW(nullptr), 0);
+        deskHook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr, onDesktop, 0, 0,
+                                   WINEVENT_OUTOFCONTEXT);
     }
     static void stop() {
         if (hook) UnhookWindowsHookEx(hook);
+        if (deskHook) UnhookWinEvent(deskHook);
         hook = nullptr;
+        deskHook = nullptr;
     }
 };

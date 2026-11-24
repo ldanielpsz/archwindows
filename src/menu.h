@@ -10,6 +10,7 @@
 // A LaunchPolicy provides: static bool run(const wchar_t* path).
 #pragma once
 #include "sys.h"
+#include "launch.h"
 #include "theme.h"
 #include "render_gdi.h"
 #include "options.h"
@@ -22,7 +23,7 @@
 
 struct ShellLaunch {
     static bool run(const wchar_t* path, const wchar_t* params = nullptr) {
-        return (INT_PTR)ShellExecuteW(nullptr, L"open", path, params, nullptr, SW_SHOWNORMAL) > 32;
+        return launch::run(path, params);
     }
 };
 
@@ -322,7 +323,8 @@ struct Menu {
                     L"Super + Q / W  \x2014  close window",
                     L"Super + J  \x2014  toggle split",
                     L"Super + T  \x2014  toggle floating",
-                    L"Super + F  \x2014  fullscreen",
+                    L"Super + O  \x2014  pop window out (float & pin; again: tile)",
+                    L"Super + F  \x2014  fullscreen (whole screen, over the bar)",
                     L"Super + Alt + F  \x2014  full width",
                     L"Super + M  \x2014  minimize",
                     L"Super + arrows  \x2014  move focus",

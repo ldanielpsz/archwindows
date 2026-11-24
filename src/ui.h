@@ -243,7 +243,17 @@ struct Flyout {
         if (!hwnd) return;
         HDC mem = CreateCompatibleDC(nullptr);
         int h;
-        { GdiRenderer r(mem, 1, 1); const int sx = mx; mx = my = -1; h = pass(r, false, false, nullptr); mx = sx; }
+        {
+            // Measure with no input at all: a slider mid-drag must not read the parked -1 cursor
+            // (it would jump to 0), and the drag itself must survive the pass.
+            GdiRenderer r(mem, 1, 1);
+            const int sx = mx, sy = my, sd = Ui::drag;
+            const bool sh = held;
+            mx = my = -1;
+            held = false;
+            h = pass(r, false, false, nullptr);
+            mx = sx; my = sy; held = sh; Ui::drag = sd;
+        }
         DeleteDC(mem);
         if (h != height) { height = h; place(); }
         InvalidateRect(hwnd, nullptr, FALSE);

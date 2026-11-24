@@ -209,12 +209,13 @@ void Bus::commit(int i) {
     S.committed = i;
     preview(i);
     if (Options::sysTheme) SysTheme::apply(S.pal);  // committed themes only, never previews
-    if (Options::termTheme) TermTheme::apply(S.pal);
+    if (Options::termTheme) TermTheme::apply(S.pal, Themes::name(S.committed));
     if (Options::browserTheme) BrowserTheme::apply(Themes::name(S.committed), S.pal.light);
 }
 void Bus::scheduleTrim() { if (S.ctl) SetTimer(S.ctl, kTrimTimer, 1500, nullptr); }
 void Bus::dpiChanged(int dpi) {
     S.dpi = dpi;
+    Confirm::dpi = dpi;  // the themed prompt is drawn with the shared fonts
     Fonts::build(dpi, S.logoFace[0] ? S.logoFace : nullptr);
 }
 // Only the primary monitor's scale drives the shared fonts and bar height; bars on monitors with
@@ -264,8 +265,14 @@ static unsigned statusSignature() {
     mixIn((unsigned)(ULONG_PTR)KeyboardW::current());
     return h;
 }
+// The layout calls this after every change, so it also hides each bar while a fullscreen
+// window covers its monitor (Super+F, or Windows' own full-screen notice) and shows it again after.
 void Bus::repaintBar() {
-    for (TheBar& b : S.bars) if (b.hwnd) InvalidateRect(b.hwnd, nullptr, FALSE);
+    for (TheBar& b : S.bars) {
+        if (!b.hwnd) continue;
+        b.cover(b.winFs || Layout::fullscreenOn(b.m.mon));
+        if (!b.covered) InvalidateRect(b.hwnd, nullptr, FALSE);
+    }
 }
 
 void Bus::optionsChanged() {
@@ -281,7 +288,7 @@ void Bus::optionsChanged() {
     }
     if (Options::termTheme != S.termThemeOn) {
         S.termThemeOn = Options::termTheme;
-        if (S.termThemeOn) TermTheme::apply(S.pal); else TermTheme::restore();
+        if (S.termThemeOn) TermTheme::apply(S.pal, Themes::name(S.committed)); else TermTheme::restore();
     }
     if (Options::browserTheme != S.browserThemeOn) {
         S.browserThemeOn = Options::browserTheme;
@@ -308,6 +315,7 @@ void Bus::chord(int i) {
         case K_MIN: if (h) ShowWindow(h, SW_MINIMIZE); break;
         case K_SPLIT: Layout::toggleSplit(h); break;
         case K_FLOAT: Layout::toggleFloat(h); Watcher::handle(h, true); break;
+        case K_POP: Layout::pop(h); Watcher::handle(h, true); break;  // title bar back while popped out
         case K_FULL: case K_FULLW: Layout::fullscreen(h, c.arg); break;
         case K_FOCUS: Layout::focusDir(h, c.arg); break;
         case K_SWAP: Layout::swapDir(h, c.arg); break;
@@ -350,10 +358,34 @@ static void taskbarAutoHide(bool on) {
     }
 }
 
+// Explorer shows the auto-hidden taskbar again on its own: the mouse at the screen edge, a
+// flashing app button, a notification. Hidden only on the minute tick, it then stayed up for up
+// to a minute. So every show of a taskbar window is caught as it happens (a WinEvent hook on
+// Explorer's process, show events only) and undone at once. Re-armed when Explorer restarts.
+static HWINEVENTHOOK gTrayHook;
+static DWORD gTrayPid;
+static void CALLBACK onTrayShown(HWINEVENTHOOK, DWORD, HWND h, LONG obj, LONG child, DWORD, DWORD) {
+    if (!h || obj != OBJID_WINDOW || child != CHILDID_SELF) return;
+    wchar_t c[32];
+    if (!GetClassNameW(h, c, 32) || !(sys::weq(c, L"Shell_TrayWnd") || sys::weq(c, L"Shell_SecondaryTrayWnd"))) return;
+    if (IsWindowVisible(h)) ShowWindow(h, SW_HIDE);
+}
+static void watchTaskbars(bool on) {
+    DWORD pid = 0;
+    if (HWND t = on ? FindWindowW(L"Shell_TrayWnd", nullptr) : nullptr) GetWindowThreadProcessId(t, &pid);
+    if (gTrayHook && pid == gTrayPid) return;  // already watching this Explorer
+    if (gTrayHook) UnhookWinEvent(gTrayHook);
+    gTrayHook = pid ? SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, onTrayShown, pid, 0,
+                                      WINEVENT_OUTOFCONTEXT)
+                    : nullptr;
+    gTrayPid = gTrayHook ? pid : 0;
+}
+
 // The Windows taskbar (and with it the Start button) is hidden while we run. Explorer can
 // re-show it or recreate it (crash/restart -> "TaskbarCreated"), so it is re-hidden on that
 // broadcast and on the bar's minute clock tick. Restored on exit.
 static void setTaskbars(bool show) {
+    watchTaskbars(!show);  // off before showing it, or the hook would hide it again
     if (!show) taskbarAutoHide(true);
     if (HWND t = FindWindowW(L"Shell_TrayWnd", nullptr)) {
         logf(L"taskbar: primary %p show=%d", (void*)t, (int)show);
@@ -498,6 +530,13 @@ extern "C" void start() {
     }
 
     flagValue(L"--log=", gLogPath, MAX_PATH);
+    if (!gLogPath[0]) {  // or HKCU\Software\ArchWindows\LogPath (the installed shell is started by Explorer, no flags)
+        DWORD sz = sizeof(gLogPath);
+        if (RegGetValueW(HKEY_CURRENT_USER, RegistryStore::key, L"LogPath", RRF_RT_REG_SZ, nullptr, gLogPath, &sz) !=
+            ERROR_SUCCESS)
+            gLogPath[0] = 0;
+    }
+    Layout::trace = gLogPath[0] ? logf : nullptr;
     logf(L"start: archwindows launching");
     HANDLE once = CreateMutexW(nullptr, TRUE, L"Local\\ArchWindowsBar");
     if (GetLastError() == ERROR_ALREADY_EXISTS) { logf(L"start: another instance owns the mutex, exiting"); ExitProcess(0); }
@@ -525,7 +564,7 @@ extern "C" void start() {
     S.tilingOn = Options::tiling;
     S.sysThemeOn = Options::sysTheme;
     S.termThemeOn = Options::termTheme;
-    if (S.termThemeOn) TermTheme::apply(S.pal);  // e.g. first run after install, or the option set elsewhere
+    if (S.termThemeOn) TermTheme::apply(S.pal, Themes::name(S.committed));  // e.g. first run after install, or the option set elsewhere
     S.browserThemeOn = Options::browserTheme;
     if (S.browserThemeOn) BrowserTheme::apply(Themes::name(S.committed), S.pal.light);
     if (S.sysThemeOn) SysTheme::apply(S.pal);
@@ -537,6 +576,7 @@ extern "C" void start() {
 
     S.dpi = (int)GetDpiForSystem();
     Bus::dpiChanged(S.dpi);
+    Confirm::palette = &Bus::palette;  // the themed yes/no prompt follows the live theme
     logf(L"font: %s", Fonts::face);
 
     gTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
@@ -596,7 +636,9 @@ extern "C" void start() {
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi{};
-        if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        // With UIAccess, have Explorer run it, so the Explorer it restarts gets an ordinary token.
+        if (launch::uiAccess() && launch::viaExplorer(L"cmd.exe", cmd + 8, SW_HIDE)) {
+        } else if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
         }

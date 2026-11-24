@@ -11,7 +11,7 @@
 //     are recoloured on the spot.
 //
 // settings.json is JSON with comments, edited in place: only the "archwindows" scheme object and
-// the one defaults value are touched, the rest of the file is kept byte for byte. The originals
+// the defaults values we own (colorScheme, and Omarchy's terminal opacity) are touched, the rest of the file is kept byte for byte. The originals
 // (previous defaults.colorScheme, .minttyrc, console table) are backed up the first time, under
 // HKCU\Software\ArchWindows\TermThemeBackup and .minttyrc.archwindows-backup, and put back when the
 // option is turned off. Unlike SysTheme this is not undone on quit: like the wallpaper, it stays.
@@ -226,48 +226,55 @@ struct TermTheme {
         return splice(b, arr + 1, 0, ins, n);
     }
 
-    // Point profiles.defaults.colorScheme at ours; the value it replaces goes to `prev` (raw JSON
+    static bool same(const char* p, int len, const char* v) {
+        const DWORD n = slen(v);
+        if ((DWORD)len != n) return false;
+        for (DWORD i = 0; i < n; ++i) if (p[i] != v[i]) return false;
+        return true;
+    }
+
+    // Set profiles.defaults.<key> to `val` (raw JSON); the value it replaces goes to `prev` (raw JSON
     // text, or `absent`). Returns false when there is nothing to change or the file is unusual.
-    static bool pointDefaults(Buf& b, char* prev, DWORD& prevN, bool& absent) {
+    static bool setDefault(Buf& b, const char* key, const char* val, char* prev, DWORD& prevN, bool& absent) {
         Json j{b.p, (int)b.n};
         const int root = j.root();
         const int prof = j.find(root, "profiles");
         if (prof < 0 || b.p[prof] != '{') return false;  // legacy array form: leave it alone
         const int def = j.find(prof, "defaults");
-        static const char kVal[] = "\"archwindows\"";
+        char ins[256];
         if (def < 0) {
-            char ins[96];
-            const DWORD n = (DWORD)wsprintfA(ins, "\r\n        \"defaults\": { \"colorScheme\": %s }%s", kVal, j.empty(prof) ? "" : ",");
+            const DWORD n = (DWORD)wsprintfA(ins, "\r\n        \"defaults\": { \"%s\": %s }%s", key, val, j.empty(prof) ? "" : ",");
             absent = true;
             prevN = 0;
             return splice(b, prof + 1, 0, ins, n);
         }
         if (b.p[def] != '{') return false;
-        const int cs = j.find(def, "colorScheme");
-        if (cs < 0) {
-            char ins[96];
-            const DWORD n = (DWORD)wsprintfA(ins, "\r\n            \"colorScheme\": %s%s", kVal, j.empty(def) ? "" : ",");
+        const int v = j.find(def, key);
+        if (v < 0) {
+            const DWORD n = (DWORD)wsprintfA(ins, "\r\n            \"%s\": %s%s", key, val, j.empty(def) ? "" : ",");
             absent = true;
             prevN = 0;
             return splice(b, def + 1, 0, ins, n);
         }
-        if (j.strIs(cs, kName)) return false;  // already ours
-        const int end = j.value(cs);
+        const int end = j.value(v);
+        if (same(b.p + v, end - v, val)) return false;  // already ours
         absent = false;
-        prevN = (DWORD)(end - cs) < 512 ? (DWORD)(end - cs) : 0;
-        for (DWORD i = 0; i < prevN; ++i) prev[i] = b.p[cs + i];
-        return splice(b, cs, end - cs, kVal, sizeof(kVal) - 1);
+        prevN = (DWORD)(end - v) < 512 ? (DWORD)(end - v) : 0;
+        for (DWORD i = 0; i < prevN; ++i) prev[i] = b.p[v + i];
+        return splice(b, v, end - v, val, slen(val));
     }
 
-    // Undo pointDefaults: put `prev` back, or remove the member we added.
-    static bool restoreDefaults(Buf& b, const char* prev, DWORD prevN, bool absent) {
+    // Undo setDefault: put `prev` back, or remove the member we added. Only while the member still
+    // holds `ours` (what we last wrote); a value the user changed since is theirs to keep.
+    static bool restoreDefault(Buf& b, const char* key, const char* ours, const char* prev, DWORD prevN, bool absent) {
         Json j{b.p, (int)b.n};
         const int def = j.find(j.find(j.root(), "profiles"), "defaults");
         int keyAt = -1;
-        const int cs = j.find(def, "colorScheme", &keyAt);
-        if (cs < 0 || !j.strIs(cs, kName)) return false;  // user changed it since: keep theirs
-        const int end = j.value(cs);
-        if (!absent) return prevN && splice(b, cs, end - cs, prev, prevN);
+        const int v = j.find(def, key, &keyAt);
+        if (v < 0) return false;
+        const int end = j.value(v);
+        if (!same(b.p + v, end - v, ours)) return false;
+        if (!absent) return prevN && splice(b, v, end - v, prev, prevN);
         int a = keyAt, e = j.ws(end);
         if (e < j.n && b.p[e] == ',') ++e;  // "key": v,  -> drop through the comma
         else {                               // last member: drop the comma before it instead
@@ -277,6 +284,17 @@ struct TermTheme {
             e = end;
         }
         return splice(b, a, e - a, "", 0);
+    }
+
+    // Omarchy's terminal transparency (default/hypr/windows.lua: o.transparent_window for the
+    // "terminal" tag, 0.985 focused / 0.96 unfocused). It is a compositor window rule there, so
+    // every theme gets it; Kanagawa alone overrides it (themes/kanagawa/hyprland.lua, "backdrop is
+    // too strong for default opacity": 0.99 / 0.985). Terminal takes whole percents, plain
+    // see-through (no acrylic blur), and unfocusedAppearance inherits everything else.
+    static void opacity(const wchar_t* theme, char* focused, char* unfocused) {
+        const bool kanagawa = theme && sys::weq(theme, L"kanagawa");
+        wsprintfA(focused, "%d", kanagawa ? 99 : 98);
+        wsprintfA(unfocused, "{ \"opacity\": %d }", kanagawa ? 98 : 96);
     }
 
     // Terminal's window chrome (tab row, title bar, light/dark) is a separate "theme", not part of the
@@ -378,7 +396,12 @@ struct TermTheme {
     static bool has(HKEY k, const wchar_t* name) { return RegQueryValueExW(k, name, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS; }
 
     // ------------------------------------------------------------------ apply --
-    static void applyTerminal(const Ansi& a, const Palette& pal, HKEY bk) {
+    // profiles.defaults members we own, and their backup value names (%d: which settings.json).
+    static constexpr int kDefaults = 3;
+    static constexpr const char* kDefaultKey[kDefaults] = {"colorScheme", "opacity", "unfocusedAppearance"};
+    static constexpr const wchar_t* kDefaultReg[kDefaults] = {L"wt%d", L"wto%d", L"wtu%d"};
+
+    static void applyTerminal(const Ansi& a, const Palette& pal, const wchar_t* theme, HKEY bk) {
         wchar_t paths[3][MAX_PATH];
         const int np = wtPaths(paths);
         for (int i = 0; i < np; ++i) {
@@ -400,17 +423,24 @@ struct TermTheme {
                     }
                 }
             }
-            char prev[512];
-            DWORD prevN = 0;
-            bool absent = false;
-            if (pointDefaults(b, prev, prevN, absent)) {
-                changed = true;
-                wchar_t vn[16];
-                wsprintfW(vn, L"wt%d", i);
-                if (!has(bk, vn)) {  // the true original only
-                    if (absent) { const DWORD one = 1; RegSetValueExW(bk, vn, 0, REG_DWORD, (const BYTE*)&one, sizeof(one)); }
-                    else RegSetValueExW(bk, vn, 0, REG_BINARY, (const BYTE*)prev, prevN);
+            char op[8], uop[40];
+            opacity(theme, op, uop);
+            const char* const val[kDefaults] = {"\"archwindows\"", op, uop};
+            for (int d = 0; d < kDefaults; ++d) {
+                char prev[512];
+                DWORD prevN = 0;
+                bool absent = false;
+                wchar_t vn[16], vo[24];
+                wsprintfW(vn, kDefaultReg[d], i);
+                wsprintfW(vo, L"%s.ours", vn);
+                if (setDefault(b, kDefaultKey[d], val[d], prev, prevN, absent)) {
+                    changed = true;
+                    if (!has(bk, vn)) {  // the true original only
+                        if (absent) { const DWORD one = 1; RegSetValueExW(bk, vn, 0, REG_DWORD, (const BYTE*)&one, sizeof(one)); }
+                        else RegSetValueExW(bk, vn, 0, REG_BINARY, (const BYTE*)prev, prevN);
+                    }
                 }
+                if (has(bk, vn)) RegSetValueExW(bk, vo, 0, REG_BINARY, (const BYTE*)val[d], slen(val[d]));
             }
             if (changed) writeFile(paths[i], b.p, b.n);
             release(b);
@@ -633,11 +663,11 @@ struct TermTheme {
         }
     }
 
-    static void apply(const Palette& p) {
+    static void apply(const Palette& p, const wchar_t* theme) {
         HKEY bk = backupKey(true);
         if (!bk) return;
         const Ansi a = ansi(p);
-        applyTerminal(a, p, bk);
+        applyTerminal(a, p, theme, bk);
         applyMintty(a, bk);
         applyBash(a, bk);
         applyConsole(a, bk);
@@ -652,21 +682,26 @@ struct TermTheme {
         wchar_t paths[3][MAX_PATH];
         const int np = wtPaths(paths);
         for (int i = 0; i < np; ++i) {
-            wchar_t vn[16];
-            wsprintfW(vn, L"wt%d", i);
-            char prev[512];
-            DWORD type = 0, sz = sizeof(prev);
-            const bool hasScheme = RegQueryValueExW(bk, vn, nullptr, &type, (BYTE*)prev, &sz) == ERROR_SUCCESS;
             char prevT[512];
             DWORD typeT = 0, szT = sizeof(prevT);
             wchar_t vt[16];
             wsprintfW(vt, L"wtt%d", i);
             const bool hasTheme = RegQueryValueExW(bk, vt, nullptr, &typeT, (BYTE*)prevT, &szT) == ERROR_SUCCESS;
-            if (!hasScheme && !hasTheme) continue;
             Buf b;
             if (!readFile(paths[i], b)) continue;
-            bool changed = hasScheme && restoreDefaults(b, prev, type == REG_BINARY ? sz : 0, type == REG_DWORD);
-            changed |= hasTheme && restoreTheme(b, prevT, typeT == REG_BINARY ? szT : 0, typeT == REG_DWORD);
+            bool changed = hasTheme && restoreTheme(b, prevT, typeT == REG_BINARY ? szT : 0, typeT == REG_DWORD);
+            for (int d = 0; d < kDefaults; ++d) {
+                wchar_t vn[16], vo[24];
+                wsprintfW(vn, kDefaultReg[d], i);
+                wsprintfW(vo, L"%s.ours", vn);
+                char prev[512], ours[512];
+                DWORD type = 0, sz = sizeof(prev), osz = sizeof(ours) - 1;
+                if (RegQueryValueExW(bk, vn, nullptr, &type, (BYTE*)prev, &sz) != ERROR_SUCCESS) continue;
+                if (RegQueryValueExW(bk, vo, nullptr, nullptr, (BYTE*)ours, &osz) == ERROR_SUCCESS) ours[osz] = 0;
+                else if (d == 0) wsprintfA(ours, "\"%s\"", kName);  // backups from before .ours existed
+                else continue;
+                changed |= restoreDefault(b, kDefaultKey[d], ours, prev, type == REG_BINARY ? sz : 0, type == REG_DWORD);
+            }
             if (changed) writeFile(paths[i], b.p, b.n);
             release(b);
         }

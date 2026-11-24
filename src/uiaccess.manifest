@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded only by "build.cmd <version> uiaccess" (see tools/uiaccess.ps1). uiAccess lets the
+     shell tile and drive elevated windows. Windows starts such an exe only when it is signed by a
+     trusted certificate and runs from a secure folder (Program Files), so a build with this
+     manifest will not start from build\. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="true"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

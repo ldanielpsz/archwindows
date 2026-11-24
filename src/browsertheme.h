@@ -9,6 +9,7 @@
 // Only values this shell wrote are removed again (marker under HKCU\Software\ArchWindows).
 #pragma once
 #include "sys.h"
+#include "launch.h"
 #include <tlhelp32.h>
 
 struct BrowserTheme {
@@ -69,14 +70,8 @@ struct BrowserTheme {
                 sz = sizeof(exe);
                 if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, exe, &sz) != ERROR_SUCCESS) continue;
             }
-            wchar_t cmd[MAX_PATH + 64];
-            wsprintfW(cmd, L"\"%s\" --refresh-platform-policy --no-startup-window", exe);
-            STARTUPINFOW si{sizeof(si)};
-            PROCESS_INFORMATION pi{};
-            if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-                CloseHandle(pi.hThread);
-                CloseHandle(pi.hProcess);
-            }
+            // Through launch:: so a browser started here never inherits the shell's UIAccess.
+            launch::run(exe, L"--refresh-platform-policy --no-startup-window", SW_SHOWNORMAL, false);  // no window to focus
         }
     }
 };

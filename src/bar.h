@@ -323,6 +323,25 @@ struct Bar : Ws... {
     // snapping and the tiler's work area all start below it. Windows removes the reservation
     // by itself if this process dies.
     bool reserved = false;
+    // Hidden under a fullscreen window: Windows' ABN_FULLSCREENAPP (games, F11 video) or the
+    // layout's Super+F. Hiding, not z-order: with uiAccess the bar lives in a z-order band above
+    // every ordinary window, so no fullscreen window could ever cover it.
+    bool winFs = false, covered = false;
+    bool coveredBy(HWND f) const {
+        MONITORINFO mi{sizeof(mi)};
+        RECT r;
+        if (!f || MonitorFromWindow(f, MONITOR_DEFAULTTONEAREST) != m.mon || !GetMonitorInfoW(m.mon, &mi) ||
+            !GetWindowRect(f, &r))
+            return false;
+        return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top && r.right >= mi.rcMonitor.right &&
+               r.bottom >= mi.rcMonitor.bottom;
+    }
+    void cover(bool on) {
+        if (on == covered || !hwnd) return;
+        covered = on;
+        if (on) ShowWindow(hwnd, SW_HIDE);
+        else SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
     void place() {
         MONITORINFO mi{sizeof(mi)};
         if (!GetMonitorInfoW(m.mon, &mi)) return;  // monitor gone; the shell rebuilds the bars
@@ -338,7 +357,7 @@ struct Bar : Ws... {
         abd.rc.bottom = abd.rc.top + m.h;
         SHAppBarMessage(ABM_SETPOS, &abd);
         SetWindowPos(hwnd, HWND_TOPMOST, abd.rc.left, abd.rc.top, abd.rc.right - abd.rc.left, m.h,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                     SWP_NOACTIVATE | (covered ? 0 : SWP_SHOWWINDOW));
     }
     void unreserve() {
         if (!reserved) return;
@@ -400,8 +419,12 @@ struct Bar : Ws... {
                 return 0;
             case WM_APP:  // app bar notifications
                 if (wp == ABN_POSCHANGED) place();
-                else if (wp == ABN_FULLSCREENAPP)
-                    SetWindowPos(h, lp ? HWND_BOTTOM : HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                else if (wp == ABN_FULLSCREENAPP) {
+                    // Sent to every app bar, whichever monitor the fullscreen window is on: only
+                    // hide if it actually covers this bar's monitor.
+                    winFs = lp != 0 && coveredBy(GetForegroundWindow());
+                    Bus::repaintBar();  // decides cover() from this and the layout's Super+F state
+                }
                 return 0;
             // Fonts are shared by every bar, so the shell decides (only the primary monitor's
             // scale changes them). Never take the suggested rect: place() sizes the bar.

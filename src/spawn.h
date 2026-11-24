@@ -7,10 +7,18 @@
 // tiled on that monitor too. Windows the layout already tracks (e.g. ones a workspace switch
 // reveals) are never claimed, and one launch claims at most one window.
 //
+// It is also focused: the first new app window shown within kWindowMs of anything started through
+// launch::run (launch.h stamps launchedAt) gets the keyboard focus. Programs started through
+// Explorer (the uiAccess build's route) may not take the foreground themselves, so without this
+// they opened behind the focused window. Packaged apps show cloaked and some apps activate late,
+// so it is retried every kTickMs until the window has the focus, for at most kFocusMs.
+//
 // A PlacementPolicy provides:  arm(HMONITOR)  claim(HWND)
 #pragma once
 #include "sys.h"
 #include "winstyle.h"  // winutil::isOwn, isShellWindow
+#include "launch.h"    // launch::launchedAt
+#include "tiler.h"     // tileutil::forceForeground
 
 template <class Layout>
 struct SpawnPlacement {
@@ -32,12 +40,49 @@ struct SpawnPlacement {
     }
 
     static void claim(HWND h) {
-        if (!mon) return;
-        if (GetTickCount() - armedAt > kWindowMs) { mon = nullptr; return; }
+        const DWORD now = GetTickCount();
+        if (mon && now - armedAt > kWindowMs) mon = nullptr;
+        if (launch::launchedAt && now - launch::launchedAt > kWindowMs) launch::launchedAt = 0;
+        if (!mon && !launch::launchedAt) return;
         if (!appWindow(h) || Layout::known(h)) return;
-        const HMONITOR target = mon;
-        mon = nullptr;
-        moveTo(h, target);
+        if (mon) {
+            const HMONITOR target = mon;
+            mon = nullptr;
+            moveTo(h, target);
+        }
+        if (launch::launchedAt) {
+            launch::launchedAt = 0;
+            focusSoon(h);
+        }
+    }
+
+    // ------------------------------------------------------------- focus --
+    static constexpr DWORD kFocusMs = 3000, kTickMs = 50;
+    static inline HWND pending;
+    static inline DWORD pendingAt;
+    static inline UINT_PTR timer;
+
+    static bool cloaked(HWND h) {
+        BOOL c = FALSE;
+        DwmGetWindowAttribute(h, DWMWA_CLOAKED, &c, sizeof(c));
+        return c != FALSE;
+    }
+    static void focusSoon(HWND h) {
+        pending = h;
+        pendingAt = GetTickCount();
+        tick(nullptr, 0, 0, 0);
+        if (pending && !timer) timer = SetTimer(nullptr, 0, kTickMs, tick);
+    }
+    static void CALLBACK tick(HWND, UINT, UINT_PTR, DWORD) {
+        const HWND h = pending;
+        bool done = !h || !IsWindow(h) || GetTickCount() - pendingAt > kFocusMs || GetForegroundWindow() == h;
+        if (!done && IsWindowVisible(h) && !IsIconic(h) && !cloaked(h)) {
+            tileutil::forceForeground(h);
+            done = GetForegroundWindow() == h;
+        }
+        if (!done) return;
+        pending = nullptr;
+        if (timer) { KillTimer(nullptr, timer); timer = 0; }
     }
 
     static void moveTo(HWND h, HMONITOR target) {

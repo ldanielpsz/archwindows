@@ -7,6 +7,7 @@
 // rights, so it runs one elevated PowerShell command (Windows shows its UAC prompt).
 #pragma once
 #include "sys.h"
+#include "launch.h"
 #include <winsock2.h>
 #include <ws2ipdef.h>
 #include <iphlpapi.h>
@@ -322,12 +323,12 @@ struct Net {
         st.dwPhyIndex = 0;
         st.dot11SoftwareRadioState = on ? dot11_radio_state_on : dot11_radio_state_off;
         if (Wlan::set(Wlan::h, &ifGuid, wlan_intf_opcode_radio_state, sizeof(st), &st, nullptr) != ERROR_SUCCESS)
-            ShellExecuteW(nullptr, L"open", L"ms-settings:network-wifi", nullptr, nullptr, SW_SHOWNORMAL);
+            launch::run(L"ms-settings:network-wifi", nullptr);
     }
     static void join(const Row& r) {
         if (r.connected) return;
         if (!r.known) {  // needs a password: Windows' own network list asks for it
-            ShellExecuteW(nullptr, L"open", L"ms-availablenetworks:", nullptr, nullptr, SW_SHOWNORMAL);
+            launch::run(L"ms-availablenetworks:", nullptr);
             return;
         }
         WLAN_CONNECTION_PARAMETERS cp{};
@@ -338,8 +339,7 @@ struct Net {
     }
     static void setDns(int which) {
         if (which == 3 || !alias[0]) {
-            ShellExecuteW(nullptr, L"open", wired ? L"ms-settings:network-ethernet" : L"ms-settings:network-wifi", nullptr,
-                          nullptr, SW_SHOWNORMAL);
+            launch::run(wired ? L"ms-settings:network-ethernet" : L"ms-settings:network-wifi");
             return;
         }
         wchar_t a[260], *o = a;  // alias inside single quotes: double any quote it contains
@@ -372,7 +372,7 @@ struct Net {
         static const wchar_t* const btn[] = {L"\xEC4A"};
         const int h = u.hero(glyph, F_HERO, u.p.fg(), title, meta, hasWifi ? (radioOn ? 1 : 0) : -1, btn, 1);
         if (h == 1) { setRadio(!radioOn); Sleep(150); wifiState(); networks(); invalidateBar(); }
-        else if (h == 2) { ShellExecuteW(nullptr, L"open", L"https://speed.cloudflare.com/", nullptr, nullptr, SW_SHOWNORMAL); u.wantClose = true; }
+        else if (h == 2) { launch::run(L"https://speed.cloudflare.com/"); u.wantClose = true; }
         u.gap(10);
 
         if (online) {
