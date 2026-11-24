@@ -75,7 +75,9 @@ struct StripCaption {
             L"OpusApp", L"XLMAIN", L"PPTFrameClass", L"rctrl_renwnd32",  // Office
         };
         for (const wchar_t* s : skip) if (winutil::startsWith(c, s)) return true;
-        return false;
+        // Windows 11 Notepad: its tab row is the title bar; stripped, a classic caption was painted
+        // over the tabs. Exact, so Notepad++ ("Notepad++") is still stripped.
+        return sys::weq(c, L"Notepad");
     }
 
     static bool eligible(HWND h) {
@@ -91,7 +93,11 @@ struct StripCaption {
     }
 
     static void hide(HWND h) {
-        if (stripped(h) || !eligible(h)) return;
+        if (stripped(h)) {
+            if (excludedClass(h)) restore(h);  // stripped before its class joined the list above
+            return;
+        }
+        if (!eligible(h)) return;
         SetWindowLongPtrW(h, GWL_STYLE, GetWindowLongPtrW(h, GWL_STYLE) & ~(LONG_PTR)WS_CAPTION);
         SetPropW(h, prop, (HANDLE)1);
         refresh(h);
@@ -102,6 +108,8 @@ struct StripCaption {
         SetWindowLongPtrW(h, GWL_STYLE, GetWindowLongPtrW(h, GWL_STYLE) | WS_CAPTION);
         RemovePropW(h, prop);
         refresh(h);
+        // Apps that draw their own title bar can keep the stale caption pixels until a full repaint.
+        RedrawWindow(h, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE);
     }
 };
 
